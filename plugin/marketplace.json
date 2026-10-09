@@ -1,0 +1,12 @@
+{
+  "name": "antigravity-local",
+  "interface": { "displayName": "Antigravity 本地插件" },
+  "plugins": [
+    {
+      "name": "antigravity-mcp",
+      "source": { "source": "local", "path": "./plugins/antigravity-mcp" },
+      "policy": { "installation": "AVAILABLE", "authentication": "ON_INSTALL" },
+      "category": "Productivity"
+    }
+  ]
+}

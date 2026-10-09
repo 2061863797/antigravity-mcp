@@ -1,0 +1,56 @@
+{
+  "name": "antigravity-mcp-server",
+  "version": "2.0.0",
+  "description": "Local MCP channel for agents using Antigravity CLI",
+  "type": "module",
+  "main": "dist/index.js",
+  "bin": {
+    "antigravity-mcp": "dist/index.js"
+  },
+  "files": [
+    "dist",
+    "config.json",
+    "README.md",
+    "chatgpt_desktop_config.example.json"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "build": "node scripts/clean-dist.mjs && tsc",
+    "start": "node dist/index.js",
+    "dev": "tsx src/index.ts",
+    "test": "node --test --import tsx test/*.test.ts",
+    "typecheck:test": "tsc -p tsconfig.test.json",
+    "package:plugin": "npm run build && node scripts/package-plugin.mjs",
+    "check": "npm run build && npm run typecheck:test && npm test"
+  },
+  "keywords": [
+    "mcp",
+    "model-context-protocol",
+    "antigravity",
+    "chatgpt",
+    "claude",
+    "ai"
+  ],
+  "author": "2061863797",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/2061863797/antigravity-mcp.git"
+  },
+  "homepage": "https://github.com/2061863797/antigravity-mcp#readme",
+  "bugs": {
+    "url": "https://github.com/2061863797/antigravity-mcp/issues"
+  },
+  "license": "MIT",
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.30.0",
+    "zod": "^3.24.2"
+  },
+  "bundledDependencies": ["@modelcontextprotocol/sdk", "zod"],
+  "devDependencies": {
+    "@types/node": "^22.13.9",
+    "tsx": "^4.19.3",
+    "typescript": "^5.8.2"
+  }
+}

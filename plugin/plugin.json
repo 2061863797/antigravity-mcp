@@ -1,0 +1,18 @@
+{
+  "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
+  "name": "antigravity-mcp",
+  "version": "2.0.0",
+  "description": "通过本机 agy 委派分析、编码与复核，查询任务或额度，并取消任务。",
+  "license": "MIT",
+  "extensions": {
+    "com.openai": {
+      "interface": {
+        "displayName": "Antigravity MCP",
+        "shortDescription": "调用本机 agy 的轻量子代理通道",
+        "longDescription": "提供分析、编码、任务与额度查询和取消。支持独立后台任务、重连查询和会话续接；父 agent 检查实际成果。需要 Node.js 20+、已安装并登录的 agy。",
+        "category": "Productivity",
+        "capabilities": ["Read", "Write"]
+      }
+    }
+  }
+}

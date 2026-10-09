@@ -1,0 +1,11 @@
+{
+  "mcpServers": {
+    "antigravity": {
+      "command": "node",
+      "args": [
+        "C:/Projects/antigravity-mcp/dist/index.js"
+      ],
+      "env": {}
+    }
+  }
+}
