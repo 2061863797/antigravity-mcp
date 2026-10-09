@@ -60,11 +60,11 @@ try {
   // npm 从已安装依赖中收集生产依赖闭包；离线打包，不安装依赖、不运行生命周期脚本。
   const packed = JSON.parse(run(process.execPath, [npmCli(), 'pack', '--offline', '--ignore-scripts', '--json',
     '--cache', path.join(staging, 'npm-cache'), '--pack-destination', staging]))[0];
-  const tgz = path.join(staging, packed.filename);
-  const entries = run(tar, ['-tf', tgz]).trim().split(/\r?\n/);
+  // 部分 Windows tar 使用系统代码页解码参数；工作目录走原生路径，参数仅用 ASCII 相对路径。
+  const entries = run(tar, ['-tf', packed.filename], staging).trim().split(/\r?\n/);
   if (entries.some(entry => !entry.startsWith('package/') || entry.split('/').includes('..'))) throw new Error('npm 包路径无效');
   const unpack = path.join(staging, 'unpack'); fs.mkdirSync(unpack);
-  run(tar, ['-xf', tgz, '-C', unpack]);
+  run(tar, ['-xf', packed.filename, '-C', 'unpack'], staging);
   const npmPackage = path.join(unpack, 'package'); checkTree(npmPackage);
   const bundle = path.join(staging, name);
   const plugin = path.join(bundle, 'plugins/antigravity-mcp');
@@ -80,7 +80,7 @@ try {
   fs.copyFileSync(path.join(root, 'plugin/README.md'), path.join(bundle, 'README.md'));
   if (!packed.bundled?.includes('@modelcontextprotocol/sdk') || !packed.bundled?.includes('zod')) throw new Error('npm 未包含必要生产依赖');
   const zip = path.join(staging, `${name}.zip`);
-  run(tar, ['-a', '-cf', zip, '-C', staging, name]);
+  run(tar, ['-a', '-cf', `${name}.zip`, name], staging);
   // 已有目标必须是本插件的发布目录，避免覆盖其他用户资料。
   if (fs.existsSync(destination)) {
     const old = JSON.parse(fs.readFileSync(path.join(destination, 'plugins/antigravity-mcp/plugin.json'), 'utf8'));

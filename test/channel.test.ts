@@ -8,7 +8,8 @@ import { spawn } from 'node:child_process';
 import { createRequire } from 'node:module';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
-const temporaryRoot = os.tmpdir(), suite = fs.mkdtempSync(path.join(temporaryRoot, 'antigravity-channel-'));
+// Windows CI 的 TEMP 可能是 8.3 短路径；预期值使用与执行器一致的实际路径。
+const temporaryRoot = fs.realpathSync.native(os.tmpdir()), suite = fs.mkdtempSync(path.join(temporaryRoot, 'antigravity-channel-'));
 const home = path.join(suite, 'home'); fs.mkdirSync(home);
 (os as unknown as { homedir: () => string }).homedir = () => home;
 const starts = path.join(suite, 'starts'); process.env.TEST_MODEL_STARTS = starts;
@@ -930,7 +931,7 @@ test('production stdio uses a fake executable for code, direct ask, continuation
     const code = data(await connection.client.callTool({ name: 'antigravity_code', arguments: {
       prompt: 'WRITE', workspace_dir: workspace } }, undefined,
       { onprogress: value => progress.push(value) }));
-    assert.equal(code.status, 'SUCCESS'); assert(!('verification' in code)); assert.equal(code.rawLog, null); assert(code.conversationId);
+    assert.equal(code.status, 'SUCCESS', JSON.stringify(code)); assert(!('verification' in code)); assert.equal(code.rawLog, null); assert(code.conversationId);
     assert(!('quota' in code));
     const quotaOutput = await connection.client.callTool({ name: 'antigravity_status', arguments: {} });
     assert.deepEqual(JSON.parse((quotaOutput.content as { text: string }[])[0].text), quotaOutput.structuredContent);

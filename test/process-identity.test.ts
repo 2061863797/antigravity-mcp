@@ -8,7 +8,7 @@ import childProcess, { spawn } from 'node:child_process';
 import { promisify } from 'node:util';
 import { fileURLToPath } from 'node:url';
 
-const temporary = os.tmpdir(), suite = fs.mkdtempSync(path.join(temporary, 'antigravity-identity-'));
+const temporary = fs.realpathSync.native(os.tmpdir()), suite = fs.mkdtempSync(path.join(temporary, 'antigravity-identity-'));
 process.env.ANTIGRAVITY_MCP_STATE_HOME = suite;
 const { captureCreatedAt, identityState, requireSelfIdentity } = await import('../src/utils/process-identity.js');
 const { TaskTracker } = await import('../src/utils/task-tracker.js');

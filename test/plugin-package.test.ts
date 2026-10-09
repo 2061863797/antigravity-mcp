@@ -24,7 +24,7 @@ async function until(predicate: () => boolean | Promise<boolean>) {
 }
 
 test('Windows plugin ZIP relocates with metadata, production dependencies and original Skill', { skip: process.platform !== 'win32', timeout: 120000 }, async t => {
-  const temporary = fs.mkdtempSync(path.join(os.tmpdir(), 'agy 插件 包装-'));
+  const temporary = fs.mkdtempSync(path.join(fs.realpathSync.native(os.tmpdir()), 'agy 插件 包装-'));
   t.after(() => {
     const resolved = fs.realpathSync(temporary);
     assert.equal(path.dirname(resolved), fs.realpathSync(os.tmpdir()));
@@ -40,8 +40,10 @@ test('Windows plugin ZIP relocates with metadata, production dependencies and or
   });
   const release = path.join(temporary, '发布 空格');
   const packed = JSON.parse(execute(process.execPath, ['scripts/package-plugin.mjs', '--output-dir', release], root));
-  const listing = execute(tar, ['-tf', packed.zip], temporary).trim().split(/\r?\n/);
   const name = 'antigravity-mcp-plugin-2.0.0';
+  const relocated = path.join(temporary, '解压 中文'); fs.mkdirSync(relocated);
+  fs.copyFileSync(packed.zip, path.join(relocated, `${name}.zip`));
+  const listing = execute(tar, ['-tf', `${name}.zip`], relocated).trim().split(/\r?\n/);
   assert(listing.includes(`${name}/.agents/plugins/marketplace.json`));
   assert(listing.includes(`${name}/plugins/antigravity-mcp/runtime/dist/task-worker.js`));
   assert(listing.every(entry => entry.startsWith(name + '/')));
@@ -54,8 +56,7 @@ test('Windows plugin ZIP relocates with metadata, production dependencies and or
     assert(!listing.some(entry => entry.startsWith(`${prefix}node_modules/${dev}/`)), dev);
   }
   assert(!listing.some(entry => /\/(audit|\.verify-out|\.gemini|\.codegraph|logs|\.env)(\/|$)/.test(entry)));
-  const relocated = path.join(temporary, '解压 中文'); fs.mkdirSync(relocated);
-  execute(tar, ['-xf', packed.zip, '-C', relocated], temporary);
+  execute(tar, ['-xf', `${name}.zip`], relocated);
   const directory = path.join(relocated, name), plugin = path.join(directory, 'plugins/antigravity-mcp');
   const marketplace = read(path.join(directory, '.agents/plugins/marketplace.json'));
   const manifest = read(path.join(plugin, 'plugin.json'));
