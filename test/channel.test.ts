@@ -74,7 +74,7 @@ after(async () => {
 
 test('coding without changes succeeds; model prose is not machine verification', async () => {
   const workspace = fixture('no-changes'), result = await run(workspace, { response: 'No files were modified. All tests passed.' });
-  assert.equal(result.status, 'SUCCESS'); assert.equal(result.schemaVersion, 3); assert(!('verification' in result));
+  assert.equal(result.status, 'SUCCESS', JSON.stringify(result)); assert.equal(result.schemaVersion, 3); assert(!('verification' in result));
   assert.equal(result.model, 'gemini-3.8-flash-high'); assert.equal(result.effort, 'high');
   assert.equal(result.upstreamDurationSeconds, 123); assert(result.elapsedSeconds !== null && result.elapsedSeconds < 30);
   assert.deepEqual(result.usage, { input_tokens: 12, output_tokens: 4 }); assert(!('audit' in result)); assert(!('rollback' in result)); assert(!('tokens' in result));
@@ -916,7 +916,8 @@ test('production stdio uses a fake executable for code, direct ask, continuation
   const connect = async () => {
     const client = new Client({ name: 'native-stdio', version: '3' });
     const transport = new StdioClientTransport({ command: process.execPath, args: [path.resolve('dist/index.js')],
-      env: { AGY_PATH: executable, USERPROFILE: clientHome, TEST_NODE: process.execPath }, stderr: 'pipe' });
+      // 只隔离 MCP 状态，不伪造 Windows 用户配置目录。
+      env: { AGY_PATH: executable, ANTIGRAVITY_MCP_STATE_HOME: clientHome, TEST_NODE: process.execPath }, stderr: 'pipe' });
     await client.connect(transport); return { client, transport };
   };
   const data = (result: unknown) => {

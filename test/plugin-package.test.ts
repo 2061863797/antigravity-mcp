@@ -24,10 +24,11 @@ async function until(predicate: () => boolean | Promise<boolean>) {
 }
 
 test('Windows plugin ZIP relocates with metadata, production dependencies and original Skill', { skip: process.platform !== 'win32', timeout: 120000 }, async t => {
-  const temporary = fs.mkdtempSync(path.join(fs.realpathSync.native(os.tmpdir()), 'agy 插件 包装-'));
+  const temporaryRoot = fs.realpathSync.native(os.tmpdir());
+  const temporary = fs.mkdtempSync(path.join(temporaryRoot, 'agy 插件 包装-'));
   t.after(() => {
-    const resolved = fs.realpathSync(temporary);
-    assert.equal(path.dirname(resolved), fs.realpathSync(os.tmpdir()));
+    const resolved = fs.realpathSync.native(temporary);
+    assert.equal(path.dirname(resolved), temporaryRoot);
     assert(path.basename(resolved).startsWith('agy 插件 包装-'));
     const noLinks = (directory: string) => {
       for (const entry of fs.readdirSync(directory, { withFileTypes: true })) {
@@ -95,7 +96,7 @@ test('Windows plugin ZIP relocates with metadata, production dependencies and or
       const client = new Client({ name: 'relocated-plugin-test', version: '1' });
       const env: Record<string, string> = {
         PATH: process.env.PATH ?? '', SystemRoot: process.env.SystemRoot ?? 'C:\\Windows',
-        TEMP: temporary, TMP: temporary, USERPROFILE: home, ANTIGRAVITY_MCP_STATE_HOME: home,
+        TEMP: temporary, TMP: temporary, ANTIGRAVITY_MCP_STATE_HOME: home,
         AGY_PATH: executable, PLUGIN_TEST_NODE: process.execPath,
         PLUGIN_TEST_FAKE_SCRIPT: path.join(fakeDirectory, 'fake-agy-launcher.mjs'), TEST_MODEL_STARTS: starts,
       };
