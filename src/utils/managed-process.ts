@@ -18,32 +18,46 @@ export async function startWindowsWorker(executable: string, args: string[], cwd
   const script = String.raw`
 $ErrorActionPreference = 'Stop'
 [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)
+[Console]::Error.WriteLine('AGY_MCP_WORKER_STAGE=ENVIRONMENT')
 $command = $env:AGY_MCP_WORKER_COMMAND
 $directory = $env:AGY_MCP_WORKER_CWD
 Remove-Item Env:AGY_MCP_WORKER_COMMAND, Env:AGY_MCP_WORKER_CWD
 $variables = [Environment]::GetEnvironmentVariables()
 $block = [string[]]@($variables.Keys | ForEach-Object { $_ + '=' + $variables[$_] })
+[Console]::Error.WriteLine('AGY_MCP_WORKER_STAGE=CIM_STARTUP_INFO')
 $startup = New-CimInstance -Namespace root/cimv2 -ClassName Win32_ProcessStartup -ClientOnly -Property @{
     ShowWindow = [uint16]0
     CreateFlags = [uint32]0x01000608
     EnvironmentVariables = $block
 }
+[Console]::Error.WriteLine('AGY_MCP_WORKER_STAGE=CIM_CREATE')
 $created = Invoke-CimMethod -Namespace root/cimv2 -ClassName Win32_Process -MethodName Create -Arguments @{
     CommandLine = $command
     CurrentDirectory = $directory
     ProcessStartupInformation = $startup
 }
+[Console]::Error.WriteLine('AGY_MCP_WORKER_STAGE=CIM_RETURN=' + $created.ReturnValue)
 if ($created.ReturnValue -ne 0) { throw "WORKER_START_FAILED: Windows process creation returned $($created.ReturnValue)" }
+[Console]::Error.WriteLine('AGY_MCP_WORKER_STAGE=PROCESS_IDENTITY')
 $worker = [Diagnostics.Process]::GetProcessById([int]$created.ProcessId)
 try {
     $handle = $worker.Handle
     [Console]::Out.Write((@{ pid = $created.ProcessId; createdAt = $worker.StartTime.ToUniversalTime().ToFileTimeUtc().ToString() } | ConvertTo-Json -Compress))
-} finally { $worker.Dispose() }`;
+} finally { $worker.Dispose() }
+[Console]::Error.WriteLine('AGY_MCP_WORKER_STAGE=COMPLETE')`;
   const powershell = path.join(process.env.SystemRoot ?? 'C:\\Windows', 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe');
-  const { stdout } = await promisify(execFile)(powershell, ['-NoProfile', '-NonInteractive', '-Command', script], {
-    windowsHide: true, timeout: 10000, maxBuffer: 8192,
-    env: { ...env, AGY_MCP_WORKER_COMMAND: formatCommandLine(executable, args), AGY_MCP_WORKER_CWD: cwd }
-  });
+  let stdout: string;
+  try {
+    ({ stdout } = await promisify(execFile)(powershell, ['-NoProfile', '-NonInteractive', '-Command', script], {
+      windowsHide: true, timeout: 10000, maxBuffer: 8192,
+      env: { ...env, AGY_MCP_WORKER_COMMAND: formatCommandLine(executable, args), AGY_MCP_WORKER_CWD: cwd }
+    }));
+  } catch (error) {
+    const failure = error as Error & { code?: number | string | null; signal?: string | null; killed?: boolean; stderr?: string };
+    const diagnostic = JSON.stringify({ code: failure.code ?? null, signal: failure.signal ?? null, killed: failure.killed ?? false });
+    const message = String(error), stderr = typeof failure.stderr === 'string' ? failure.stderr.slice(-8192) : '';
+    throw new Error(`WORKER_START_FAILED: ${message}\nWindows startup diagnostic: ${diagnostic}${stderr && !message.includes(stderr) ? '\n' + stderr : ''}`, { cause: error });
+  }
   const identity = JSON.parse(stdout.trim()) as { pid: number; createdAt: string };
   const pid = identity.pid;
   if (!Number.isSafeInteger(pid) || pid <= 0) throw new Error('WORKER_START_FAILED: Windows did not return a worker PID');

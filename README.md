@@ -257,6 +257,8 @@ npm run check
 
 Windows 测试需要正常的路径解析、原子文件更新、CIM 和子进程终止权限。真实 agy 验收脚本为 `scripts/live-cli-compat.mjs`，只有单独授权并设置 `ANTIGRAVITY_LIVE_TESTS=1` 后才能运行；程序化 stdio 测试不能替代真实客户端或真实模型验收。
 
+Windows worker 启动失败时，错误诊断保留系统的 `code`、`signal`、`killed`，以及 `AGY_MCP_WORKER_STAGE` 标记，用于区分 PowerShell 初始化、CIM 创建和进程身份读取等阶段。启动期限仍为 10 秒，失败不会自动重试；成功结果不增加诊断字段。
+
 命令行整体长度上限的回归分别注入 Windows 和 Linux 平台，字段与 NUL 限制仍在所有平台断言。worker 崩溃后关闭 Job 的用例只在 Windows 执行，其他平台注明机制不适用的原因后跳过，保留 Windows 上的完整断言。
 
 协作 Skill 位于 [plugin/skills/antigravity-delegation/SKILL.md](plugin/skills/antigravity-delegation/SKILL.md)，只有用户明确授权后调用 MCP。普通委派不另存提示词、提交记录、进度历史或重复最终结果；明确要求报告或证据时仅保存必要材料。
