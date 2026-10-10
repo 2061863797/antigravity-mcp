@@ -4,7 +4,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import crypto from 'node:crypto';
-import { spawn } from 'node:child_process';
+import { spawn, execFileSync } from 'node:child_process';
 import { createRequire } from 'node:module';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
@@ -931,6 +931,33 @@ test('production stdio uses a fake executable for code, direct ask, continuation
     assert.deepEqual(JSON.parse(value.content[0].text), value.structuredContent);
     return (value.structuredContent.kind === 'task' ? value.structuredContent.data : value.structuredContent) as import('../src/utils/register-tool.js').TaskResult;
   };
+  const cancellationDiagnostic = (result: ReturnType<typeof data>) => {
+    if (result.status === 'CANCELLED') return JSON.stringify(result);
+    let record: Record<string, unknown> | undefined, processes: string | undefined;
+    try {
+      record = JSON.parse(fs.readFileSync(path.join(clientHome, '.gemini', 'antigravity-mcp-jobs-v1', result.taskId! + '.task.json'), 'utf8'));
+      delete record!.token;
+      const ids = [record!.workerPid, ...record!.childPids as number[]].filter(value => Number.isSafeInteger(value) && Number(value) > 0);
+      const script = String.raw`$ErrorActionPreference='Stop';[Console]::OutputEncoding=[Text.UTF8Encoding]::new($false)
+Import-Module ($PSHOME + '\Modules\Microsoft.PowerShell.Utility\Microsoft.PowerShell.Utility.psd1')
+Import-Module ($PSHOME + '\Modules\CimCmdlets\CimCmdlets.psd1')
+$rows = @(foreach ($candidate in ($env:AGY_TEST_PROCESS_IDS -split ',')) {
+  try {
+    $process = [Diagnostics.Process]::GetProcessById([int]$candidate)
+    try {
+      $native = $process.StartTime.ToUniversalTime()
+      $cim = Get-CimInstance Win32_Process -Filter ('ProcessId=' + $candidate)
+      @{ pid=[int]$candidate; nativeCreatedAt=$native.ToFileTimeUtc().ToString(); nativeUtc=$native.ToString('yyyy-MM-ddTHH:mm:ss.ffffffZ'); cimUtc=$(if ($cim) { $cim.CreationDate.ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ss.ffffffZ') } else { $null }) }
+    } finally { $process.Dispose() }
+  } catch { @{ pid=[int]$candidate; error=$_.Exception.Message } }
+})
+[Console]::Out.Write((ConvertTo-Json -InputObject $rows -Compress -Depth 5))`;
+      processes = execFileSync(path.join(process.env.SystemRoot ?? 'C:\\Windows', 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe'),
+        ['-NoProfile', '-NonInteractive', '-Command', script], { windowsHide: true, encoding: 'utf8', timeout: 10000, maxBuffer: 8192,
+          env: { ...process.env, AGY_TEST_PROCESS_IDS: ids.join(',') } }).trim();
+    } catch (error) { processes = String(error); }
+    return JSON.stringify({ result, record, processes });
+  };
   const connection = await connect(), progress: { progress: number; total?: number }[] = [];
   let savedCode: ReturnType<typeof data> | undefined;
   try {
@@ -955,13 +982,13 @@ test('production stdio uses a fake executable for code, direct ask, continuation
     connection.client.setNotificationHandler(ProgressNotificationSchema, notification => { withoutToken.push(notification); });
     const ask = data(await connection.client.callTool({ name: 'antigravity_ask', arguments: { prompt: 'READ', workspace_dir: workspace } }));
     assert.equal(withoutToken.length, 0);
-    assert.equal(ask.status, 'SUCCESS'); assert.equal(ask.executionWorkspaceDir, workspace);
+    assert.equal(ask.status, 'SUCCESS', JSON.stringify(ask)); assert.equal(ask.executionWorkspaceDir, workspace);
     const askArgs = fs.readFileSync(path.join(ask.executionWorkspaceDir!, 'invocation.args'), 'utf8').split(/\r?\n/);
     assert.equal(askArgs[askArgs.indexOf('--mode') + 1], 'accept-edits'); assert(askArgs.some(value => value.includes('Analyze only; do not modify files')));
     assert(askArgs.includes('--dangerously-skip-permissions')); assert.equal(ask.autoApprove, true);
     const plan = data(await connection.client.callTool({ name: 'antigravity_ask', arguments: {
       prompt: 'PLAN', workspace_dir: workspace, cli_mode: 'plan', auto_approve: false, effort: 'max' } }));
-    assert.equal(plan.status, 'SUCCESS'); assert.equal(plan.cliMode, 'plan'); assert.equal(plan.effort, 'max');
+    assert.equal(plan.status, 'SUCCESS', JSON.stringify(plan)); assert.equal(plan.cliMode, 'plan'); assert.equal(plan.effort, 'max');
     const planArgs = fs.readFileSync(path.join(plan.executionWorkspaceDir!, 'invocation.args'), 'utf8').split(/\r?\n/);
     assert.equal(planArgs[planArgs.indexOf('--mode') + 1], 'plan'); assert(!planArgs.includes('--dangerously-skip-permissions')); assert(!planArgs.includes('--disable-slash-commands')); assert.equal(plan.autoApprove, false);
     const follow = data(await connection.client.callTool({ name: 'antigravity_ask', arguments: {
@@ -969,7 +996,7 @@ test('production stdio uses a fake executable for code, direct ask, continuation
     let resumed = follow;
     await waitFor(async () => { resumed = data(await connection.client.callTool({ name: 'antigravity_status',
       arguments: { task_id: follow.taskId, after_revision: resumed.revision, wait_ms: 1000 } })); return resumed.status !== 'RUNNING'; });
-    assert.equal(resumed.status, 'SUCCESS'); assert.equal(resumed.conversationId, code.conversationId);
+    assert.equal(resumed.status, 'SUCCESS', JSON.stringify(resumed)); assert.equal(resumed.conversationId, code.conversationId);
     assert.equal(resumed.autoApprove, true);
     assert(fs.readFileSync(path.join(workspace, 'invocation.args'), 'utf8').split(/\r?\n/).includes('--dangerously-skip-permissions'));
     const hanging = fixture('native-cancel'), active = data(await connection.client.callTool({ name: 'antigravity_code',
@@ -977,7 +1004,7 @@ test('production stdio uses a fake executable for code, direct ask, continuation
     await waitFor(() => fs.existsSync(path.join(hanging, 'child.pid')));
     const childPid = Number(fs.readFileSync(path.join(hanging, 'child.pid'), 'utf8'));
     const cancelled = data(await connection.client.callTool({ name: 'antigravity_cancel_task', arguments: { task_id: active.taskId } }));
-    assert.equal(cancelled.status, 'CANCELLED'); assert.equal(await isProcessAlive(childPid), false);
+    assert.equal(cancelled.status, 'CANCELLED', cancellationDiagnostic(cancelled)); assert.equal(await isProcessAlive(childPid), false);
     assert.equal(fs.readFileSync(path.join(hanging, 'a.txt'), 'utf8'), 'generated');
     const unchanged = data(await connection.client.callTool({ name: 'antigravity_cancel_task', arguments: { task_id: code.taskId } })); assert.equal(unchanged.status, 'SUCCESS');
   } finally { await connection.client.close(); }
@@ -1001,7 +1028,7 @@ test('production stdio uses a fake executable for code, direct ask, continuation
     assert.equal(conflict.errorCode, 'WORKSPACE_BUSY');
     const waiting = fresh.client.callTool({ name: 'antigravity_status', arguments: { task_id: active.taskId, after_revision: quiet.revision, wait_ms: 5000 } });
     const cancelled = data(await fresh.client.callTool({ name: 'antigravity_cancel_task', arguments: { task_id: active.taskId } }));
-    assert.equal(cancelled.status, 'CANCELLED'); await waitFor(async () => !await isProcessAlive(childPid));
+    assert.equal(cancelled.status, 'CANCELLED', cancellationDiagnostic(cancelled)); await waitFor(async () => !await isProcessAlive(childPid));
     assert(data(await waiting).revision > quiet.revision);
     const stored = data(await fresh.client.callTool({ name: 'antigravity_status', arguments: { task_id: savedCode!.taskId } }));
     assert.equal(stored.status, 'SUCCESS'); assert.equal(stored.response, savedCode!.response);

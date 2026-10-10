@@ -24,6 +24,7 @@ jobs:
         shell: bash
     env:
       ANTIGRAVITY_LIVE_TESTS: '0'
+      ANTIGRAVITY_TEST_DIAGNOSTICS: '1'
     steps:
       - uses: actions/checkout@v7
         with:
