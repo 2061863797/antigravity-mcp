@@ -639,7 +639,11 @@ test('field, escaped command-line and NUL limits reject before startup', async (
   const workspace = fixture('input-limits'), count = startCount();
   assert.equal((await run(workspace, {}, { prompt: 'x'.repeat(24001) })).errorCode, 'INVALID_ARGUMENT');
   assert.equal((await run(workspace, {}, { context: '中'.repeat(20001) })).errorCode, 'INVALID_ARGUMENT');
-  assert.equal((await run(workspace, {}, { prompt: 'x'.repeat(24000), context: '中'.repeat(20000) })).errorCode, 'INPUT_TOO_LARGE');
+  const largeInput = { prompt: 'x'.repeat(24000), context: '中'.repeat(20000) };
+  // Windows 的整体命令行上限不适用于 POSIX；通过平台注入保留两种契约的断言。
+  assert.throws(() => validateCommandLine(process.execPath, [cli, largeInput.prompt, largeInput.context], 'win32'), /INPUT_TOO_LARGE/);
+  assert.doesNotThrow(() => validateCommandLine(process.execPath, [cli, largeInput.prompt, largeInput.context], 'linux'));
+  if (process.platform === 'win32') assert.equal((await run(workspace, {}, largeInput)).errorCode, 'INPUT_TOO_LARGE');
   assert.equal((await run(workspace, {}, { prompt: 'nul\0value' })).errorCode, 'INVALID_ARGUMENT');
   assert.equal((await run(workspace, {}, { verificationCommands: ['node\0bad'] } as unknown as Partial<Options>)).errorCode, 'INVALID_ARGUMENT'); assert.equal(startCount(), count);
   assert.doesNotThrow(() => validateCommandLine('x', ['a'.repeat(29998)], 'win32'));
@@ -776,7 +780,9 @@ test('config stays read-only and rejects removed migration/cache fields', () => 
   fs.writeFileSync(config, JSON.stringify({ ...JSON.parse(bytes), volatilePaths: ['cache.db'] })); assert.throws(() => new ConfigManager(config), /INVALID_CONFIG/);
   fs.writeFileSync(config, JSON.stringify({ ...JSON.parse(bytes), defaultRequestWaitMinutes: 30 })); assert.throws(() => new ConfigManager(config), /INVALID_CONFIG/);
 });
-test('worker crash stops its process job and preserves session, files and the last elapsed time', async () => {
+test('worker crash stops its process job and preserves session, files and the last elapsed time', {
+  skip: process.platform !== 'win32' ? '依赖 Windows Job Object 及 worker 退出监视；POSIX 没有 worker 崩溃后的自动后代清理' : false
+}, async () => {
   const workspace = fixture('worker-crash'), started = await run(workspace, { hang: true, descendants: true, grandchild: true, writes: { 'a.txt': 'partial' } }, { asyncMode: true });
   await waitFor(() => fs.existsSync(path.join(workspace, 'grandchild.pid')) && !!taskTracker.get(started.taskId!)?.result.conversationId);
   const descendants = ['descendant.pid', 'grandchild.pid'].map(name => Number(fs.readFileSync(path.join(workspace, name), 'utf8')));

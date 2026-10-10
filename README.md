@@ -147,6 +147,8 @@ AGY_PATH = "C:/Tools/agy/agy.exe"
 
 POSIX 上对已逃逸后代的清理仅 Linux 支持：任务环境中的随机标记随子进程继承，清理时通过 `/proc` 查找脱离原父子关系的后代。macOS 等没有 Linux `/proc` 的平台只枚举当前父子关系；Windows 沿用 Job Object 和进程身份校验。
 
+worker 意外崩溃后的自动后代清理目前仅 Windows 支持。POSIX 没有对应的 worker 退出监视，不能保证崩溃时停止已分离的后代；只要仍有存活进程，任务会保留目录占用并报告停止未确认。
+
 续接时传回 `conversationId`，仍使用原实际工作目录：
 
 ```json
@@ -254,6 +256,8 @@ npm run check
 安装、构建或类型检查失败可能导致测试未运行；此时测试数量记为“未取得”，缺失日志会给出警告。基线采集可能包含尚未修复的失败，应按提交哈希、平台与 Node 版本记录通过、失败、跳过数量及失败用例名，再与后续任务对比。验证报告分别列出 Windows 本机实测、CI 实测和未验证项；本机构建或类型检查通过不能代替 Linux 运行结果。
 
 Windows 测试需要正常的路径解析、原子文件更新、CIM 和子进程终止权限。真实 agy 验收脚本为 `scripts/live-cli-compat.mjs`，只有单独授权并设置 `ANTIGRAVITY_LIVE_TESTS=1` 后才能运行；程序化 stdio 测试不能替代真实客户端或真实模型验收。
+
+命令行整体长度上限的回归分别注入 Windows 和 Linux 平台，字段与 NUL 限制仍在所有平台断言。worker 崩溃后关闭 Job 的用例只在 Windows 执行，其他平台注明机制不适用的原因后跳过，保留 Windows 上的完整断言。
 
 协作 Skill 位于 [plugin/skills/antigravity-delegation/SKILL.md](plugin/skills/antigravity-delegation/SKILL.md)，只有用户明确授权后调用 MCP。普通委派不另存提示词、提交记录、进度历史或重复最终结果；明确要求报告或证据时仅保存必要材料。
 
