@@ -18,7 +18,7 @@ const { taskTracker, TaskTracker } = await import('../src/utils/task-tracker.js'
 const { acquireWorkspaceLease, releaseWorkspaceLease } = await import('../src/utils/workspace-lease.js');
 const { runManagedProcess, startWindowsWorker } = await import('../src/utils/managed-process.js');
 const { isProcessAlive, killProcessTree } = await import('../src/utils/process-killer.js');
-const { captureCreatedAt } = await import('../src/utils/process-identity.js');
+const { captureCreatedAt, identityState } = await import('../src/utils/process-identity.js');
 const { ConfigManager } = await import('../src/utils/config-manager.js');
 const { sessionManager } = await import('../src/utils/session-manager.js');
 const { queryNativeQuota } = await import('../src/utils/native-quota.js');
@@ -66,7 +66,7 @@ after(async () => {
         const id = file.slice(0, -10), record = readTask(id); if (!record) continue;
         if (record.result.status === 'RUNNING') await tracker.cancel(id);
         if (record.workerPid) {
-          try { await waitFor(async () => !await isProcessAlive(record.workerPid!)); }
+          try { await waitFor(() => identityState(record.workerPid!, record.workerCreatedAt, undefined, true) === 'EXITED'); }
           catch (error) { throw new Error(`${String(error)}; worker cleanup diagnostic: ${JSON.stringify({ taskId: id,
             status: record.result.status, workerPid: record.workerPid, expectedCreatedAt: record.workerCreatedAt,
             observedCreatedAt: captureCreatedAt(record.workerPid) })}`, { cause: error }); }

@@ -59,6 +59,9 @@ test('mismatched native process identity never kills the new process', { skip: p
   const child = await sleeper();
   try {
     const stamp = captureCreatedAt(child.pid!)!; assert(stamp);
+    assert.equal(identityState(child.pid!, stamp, undefined, true), 'ALIVE');
+    assert.equal(identityState(child.pid!, String(BigInt(stamp) + 1n), undefined, true), 'EXITED');
+    assert.equal(await isProcessAlive(child.pid!), true);
     const wrong = await killProcessTree(child.pid!, String(BigInt(stamp) + 1n));
     assert.equal(wrong.verifiedTerminated, true); assert.equal(await isProcessAlive(child.pid!), true);
     const correct = await killProcessTree(child.pid!, stamp);

@@ -271,7 +271,7 @@ Windows 停止未确认时，现有 `stderrTail` 保留 `AGY_MCP_STOP_DIAGNOSTIC
 
 原生额度查询没有 `stderrTail` 字段；其停止未确认的诊断附在现有 `errorMessage` 中。CI 包装调用失败时也打印现有 `stderrTail`，以保留停止阶段信息。
 
-测试收尾等待 worker 退出超时时，日志保留任务 ID、PID、预期和实际创建标识，便于区分未退出实例与 PID 重用；退出断言和等待期限不变。
+测试收尾使用 PID 和保存的创建标识确认原 worker 退出；PID 被复用时，新的无关实例保持原状。同一实例存活或身份未知时仍等待，超时日志保留任务 ID、PID、预期和实际创建标识，15 秒期限不变。
 
 命令行整体长度上限的回归分别注入 Windows 和 Linux 平台，字段与 NUL 限制仍在所有平台断言。worker 崩溃后关闭 Job 的用例只在 Windows 执行，其他平台注明机制不适用的原因后跳过，保留 Windows 上的完整断言。
 
