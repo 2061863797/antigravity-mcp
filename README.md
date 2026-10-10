@@ -245,7 +245,9 @@ npm run check
 
 `npm test` 显式列出 `test/` 下的 `.test.ts` 文件，保留串行执行和 `tsx` 加载参数，兼容 Windows Node 20 不展开 `test/*.test.ts` 的情况。测试发现不依赖 shell 通配符展开。
 
-[CI 工作流](.github/workflows/ci.yml) 在 `ubuntu-latest`、`windows-latest` 上分别使用 Node 20 和 22，形成四组基线。推送到 `main` 或 `optimize/p0`、提交 pull request 或手动触发时执行 `npm ci` 和 `npm run check`，每组限时 30 分钟。某组失败不会取消其他组合；命令失败仍保留失败退出码，不把已知基线失败隐藏为成功。普通 CI 固定 `ANTIGRAVITY_LIVE_TESTS=0`，不调用真实 agy 或模型。
+[CI 工作流](.github/workflows/ci.yml) 当前仅在 `windows-latest` 上使用 Node 20 和 22，形成两组基线；Ubuntu CI 暂缓。推送到 `main` 或 `optimize/p0`、提交 pull request 或手动触发时执行 `npm ci` 和 `npm run check`，每组限时 30 分钟。某组失败不会取消其他组合；命令失败仍保留失败退出码，不把已知基线失败隐藏为成功。普通 CI 固定 `ANTIGRAVITY_LIVE_TESTS=0`，不调用真实 agy 或模型。
+
+本阶段先以 Windows 两组复验通过作为继续 P0 的条件。Ubuntu CI 恢复后再补充 Linux 验证；Windows 结果不能作为 Linux `/proc` 扫描及信号清理的验收依据。
 
 每组运行都会尝试上传 artifact `baseline-${os}-node-${node}-attempt-${run_attempt}`，保留 30 天，包含：
 
