@@ -239,6 +239,8 @@ npm run check
 
 `check` 依次构建、检查测试类型并运行回归。普通测试使用假 CLI，不调用真实模型。覆盖任务、额度、会话、取消、超时、目录互斥、进程身份、中文分片、长输出及本地包装；真实事件样本中的个人路径和会话标识已匿名化。
 
+`npm test` 显式列出 `test/` 下的 `.test.ts` 文件，保留串行执行和 `tsx` 加载参数，兼容 Windows Node 20 不展开 `test/*.test.ts` 的情况。测试发现不依赖 shell 通配符展开。
+
 [CI 工作流](.github/workflows/ci.yml) 在 `ubuntu-latest`、`windows-latest` 上分别使用 Node 20 和 22，形成四组基线。推送到 `main` 或 `optimize/p0`、提交 pull request 或手动触发时执行 `npm ci` 和 `npm run check`，每组限时 30 分钟。某组失败不会取消其他组合；命令失败仍保留失败退出码，不把已知基线失败隐藏为成功。普通 CI 固定 `ANTIGRAVITY_LIVE_TESTS=0`，不调用真实 agy 或模型。
 
 每组运行都会尝试上传 artifact `baseline-${os}-node-${node}-attempt-${run_attempt}`，保留 30 天，包含：
