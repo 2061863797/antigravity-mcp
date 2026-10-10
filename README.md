@@ -239,6 +239,16 @@ npm run check
 
 `check` 依次构建、检查测试类型并运行回归。普通测试使用假 CLI，不调用真实模型。覆盖任务、额度、会话、取消、超时、目录互斥、进程身份、中文分片、长输出及本地包装；真实事件样本中的个人路径和会话标识已匿名化。
 
+[CI 工作流](.github/workflows/ci.yml) 在 `ubuntu-latest`、`windows-latest` 上分别使用 Node 20 和 22，形成四组基线。推送到 `main` 或 `optimize/p0`、提交 pull request 或手动触发时执行 `npm ci` 和 `npm run check`，每组限时 30 分钟。某组失败不会取消其他组合；命令失败仍保留失败退出码，不把已知基线失败隐藏为成功。普通 CI 固定 `ANTIGRAVITY_LIVE_TESTS=0`，不调用真实 agy 或模型。
+
+每组运行都会尝试上传 artifact `baseline-${os}-node-${node}-attempt-${run_attempt}`，保留 30 天，包含：
+
+- `ci-environment.log`：实际检出的提交哈希、Node/npm 版本和平台信息。
+- `npm-ci.log`：依赖安装输出。
+- `node-test-output.log`：`check` 的完整输出，包括构建、测试类型检查及 `node --test` 的用例结果和统计。
+
+安装、构建或类型检查失败可能导致测试未运行；此时测试数量记为“未取得”，缺失日志会给出警告。基线采集可能包含尚未修复的失败，应按提交哈希、平台与 Node 版本记录通过、失败、跳过数量及失败用例名，再与后续任务对比。验证报告分别列出 Windows 本机实测、CI 实测和未验证项；本机构建或类型检查通过不能代替 Linux 运行结果。
+
 Windows 测试需要正常的路径解析、原子文件更新、CIM 和子进程终止权限。真实 agy 验收脚本为 `scripts/live-cli-compat.mjs`，只有单独授权并设置 `ANTIGRAVITY_LIVE_TESTS=1` 后才能运行；程序化 stdio 测试不能替代真实客户端或真实模型验收。
 
 协作 Skill 位于 [plugin/skills/antigravity-delegation/SKILL.md](plugin/skills/antigravity-delegation/SKILL.md)，只有用户明确授权后调用 MCP。普通委派不另存提示词、提交记录、进度历史或重复最终结果；明确要求报告或证据时仅保存必要材料。

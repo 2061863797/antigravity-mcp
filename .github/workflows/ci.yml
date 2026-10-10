@@ -1,0 +1,57 @@
+name: P0 baseline
+
+on:
+  push:
+    branches: [main, optimize/p0]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    name: ${{ matrix.os }} / Node ${{ matrix.node }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+        node: [20, 22]
+    defaults:
+      run:
+        shell: bash
+    env:
+      ANTIGRAVITY_LIVE_TESTS: '0'
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v7
+        with:
+          node-version: ${{ matrix.node }}
+          cache: npm
+      - name: Record baseline environment
+        run: |
+          {
+            git rev-parse HEAD
+            node --version
+            npm --version
+            node -e 'console.log(JSON.stringify({platform: process.platform, arch: process.arch, os: require("node:os").release()}))'
+          } 2>&1 | tee ci-environment.log
+      - name: Install dependencies
+        run: npm ci 2>&1 | tee npm-ci.log
+      - name: Run check and capture node test output
+        run: npm run check 2>&1 | tee node-test-output.log
+      - name: Upload baseline logs
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: baseline-${{ matrix.os }}-node-${{ matrix.node }}-attempt-${{ github.run_attempt }}
+          path: |
+            ci-environment.log
+            npm-ci.log
+            node-test-output.log
+          retention-days: 30
+          if-no-files-found: warn
