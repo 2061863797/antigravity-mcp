@@ -19,11 +19,18 @@ export async function startWindowsWorker(executable: string, args: string[], cwd
 $ErrorActionPreference = 'Stop'
 [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)
 [Console]::Error.WriteLine('AGY_MCP_WORKER_STAGE=ENVIRONMENT')
-$command = $env:AGY_MCP_WORKER_COMMAND
-$directory = $env:AGY_MCP_WORKER_CWD
-Remove-Item Env:AGY_MCP_WORKER_COMMAND, Env:AGY_MCP_WORKER_CWD
+$command = [Environment]::GetEnvironmentVariable('AGY_MCP_WORKER_COMMAND', [EnvironmentVariableTarget]::Process)
+$directory = [Environment]::GetEnvironmentVariable('AGY_MCP_WORKER_CWD', [EnvironmentVariableTarget]::Process)
+[Console]::Error.WriteLine('AGY_MCP_WORKER_STAGE=ENVIRONMENT_CLEAR')
+[Environment]::SetEnvironmentVariable('AGY_MCP_WORKER_COMMAND', $null, [EnvironmentVariableTarget]::Process)
+[Environment]::SetEnvironmentVariable('AGY_MCP_WORKER_CWD', $null, [EnvironmentVariableTarget]::Process)
+[Console]::Error.WriteLine('AGY_MCP_WORKER_STAGE=ENVIRONMENT_ENUMERATE')
 $variables = [Environment]::GetEnvironmentVariables()
-$block = [string[]]@($variables.Keys | ForEach-Object { $_ + '=' + $variables[$_] })
+$block = [string[]]@(foreach ($key in $variables.Keys) { $key + '=' + $variables[$key] })
+[Console]::Error.WriteLine('AGY_MCP_WORKER_STAGE=CIM_MODULE')
+# 使用 Windows PowerShell 自带模块的明确路径，避免启动过程递归发现用户或全局模块。
+Import-Module -Name ($PSHOME + '\Modules\Microsoft.PowerShell.Utility\Microsoft.PowerShell.Utility.psd1') -ErrorAction Stop
+Import-Module -Name ($PSHOME + '\Modules\CimCmdlets\CimCmdlets.psd1') -ErrorAction Stop
 [Console]::Error.WriteLine('AGY_MCP_WORKER_STAGE=CIM_STARTUP_INFO')
 $startup = New-CimInstance -Namespace root/cimv2 -ClassName Win32_ProcessStartup -ClientOnly -Property @{
     ShowWindow = [uint16]0
