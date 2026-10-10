@@ -263,6 +263,8 @@ Windows worker 启动失败时，错误诊断保留系统的 `code`、`signal`�
 
 Windows worker 的环境准备使用进程级 .NET API，所需 Utility 和 CIM 模块从 Windows PowerShell 自带目录显式加载，避免依赖用户或全局模块的自动发现。内部传递的命令和目录变量在创建 worker 前清除，其他环境变量继续继承；创建标志、PID 与创建时间校验及 10 秒创建等待期限保持不变。
 
+Windows PowerShell 的 Job 启动器编译时，若临时路径包含系统 ANSI 代码页无法表示的字符，仅在编译期间使用当前用户的 `LocalApplicationData/Temp`。编译结束后恢复原有 `TEMP`、`TMP`，CLI 的工作目录和环境继续保留中文、空格及 emoji。若该编译目录也无法表示或无法写入，启动明确失败；可将 `TEMP`、`TMP` 配置为当前代码页可表示的可写路径。
+
 命令行整体长度上限的回归分别注入 Windows 和 Linux 平台，字段与 NUL 限制仍在所有平台断言。worker 崩溃后关闭 Job 的用例只在 Windows 执行，其他平台注明机制不适用的原因后跳过，保留 Windows 上的完整断言。
 
 协作 Skill 位于 [plugin/skills/antigravity-delegation/SKILL.md](plugin/skills/antigravity-delegation/SKILL.md)，只有用户明确授权后调用 MCP。普通委派不另存提示词、提交记录、进度历史或重复最终结果；明确要求报告或证据时仅保存必要材料。

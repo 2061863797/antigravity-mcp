@@ -74,6 +74,21 @@ try {
 }
 
 const LAUNCHER_CONTENT = `$ErrorActionPreference = "Stop"
+$originalTemp = [Environment]::GetEnvironmentVariable('TEMP', [EnvironmentVariableTarget]::Process)
+$originalTmp = [Environment]::GetEnvironmentVariable('TMP', [EnvironmentVariableTarget]::Process)
+$compilerTemp = [IO.Path]::GetTempPath()
+$encoding = [Text.Encoding]::Default
+# The legacy Windows PowerShell compiler requires an ANSI-compatible temporary path.
+if ($encoding.GetString($encoding.GetBytes($compilerTemp)) -cne $compilerTemp) {
+    $localData = [Environment]::GetFolderPath('LocalApplicationData')
+    if ([string]::IsNullOrEmpty($localData)) { throw 'Windows PowerShell compiler temporary directory is unavailable' }
+    $compilerTemp = [IO.Path]::Combine($localData, 'Temp')
+    if ($encoding.GetString($encoding.GetBytes($compilerTemp)) -cne $compilerTemp) { throw 'Windows PowerShell compiler requires an ANSI-compatible temporary directory; set TEMP and TMP to a writable compatible path' }
+    [void][IO.Directory]::CreateDirectory($compilerTemp)
+}
+try {
+    [Environment]::SetEnvironmentVariable('TEMP', $compilerTemp, [EnvironmentVariableTarget]::Process)
+    [Environment]::SetEnvironmentVariable('TMP', $compilerTemp, [EnvironmentVariableTarget]::Process)
 Add-Type -TypeDefinition @"
 using System;
 using System.Runtime.InteropServices;
@@ -268,6 +283,10 @@ public class SuspendedJobLauncher {
     }
 }
 "@
+} finally {
+    [Environment]::SetEnvironmentVariable('TEMP', $originalTemp, [EnvironmentVariableTarget]::Process)
+    [Environment]::SetEnvironmentVariable('TMP', $originalTmp, [EnvironmentVariableTarget]::Process)
+}
 
 $cmdLine = $env:AGY_MCP_COMMANDLINE
 $cwd = $env:AGY_MCP_CWD
