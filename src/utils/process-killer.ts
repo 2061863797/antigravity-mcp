@@ -75,14 +75,19 @@ export async function findPidsByEnvToken(token: string): Promise<number[]> {
   return found;
 }
 
-export async function killProcessTree(pid: number, expectedCreatedAt?: string, jobToken?: string): Promise<{ success: boolean; verifiedTerminated: boolean }> {
+export async function killProcessTree(pid: number, expectedCreatedAt?: string, jobToken?: string, options: {
+  onDiagnostic?: (message: string) => void
+} = {}): Promise<{ success: boolean; verifiedTerminated: boolean }> {
   if (!Number.isSafeInteger(pid) || pid <= 0) return { success: false, verifiedTerminated: false };
   if (process.platform === 'win32') {
-    const expected = expectedCreatedAt ?? captureCreatedAt(pid);
-    const state = identityState(pid, expected, undefined, true);
+    const expected = expectedCreatedAt ?? captureCreatedAt(pid, options.onDiagnostic);
+    const state = identityState(pid, expected, undefined, true, options.onDiagnostic);
     if (state === 'EXITED') return { success: true, verifiedTerminated: true };
-    if (state !== 'ALIVE' || !expected) return { success: false, verifiedTerminated: false };
-    return killWindowsTree(pid, expected);
+    if (state !== 'ALIVE' || !expected) {
+      options.onDiagnostic?.('Windows stop identity state: ' + state);
+      return { success: false, verifiedTerminated: false };
+    }
+    return killWindowsTree(pid, expected, options.onDiagnostic);
   }
   let descendants: number[] = [];
   try {
@@ -110,9 +115,10 @@ export async function killProcessTree(pid: number, expectedCreatedAt?: string, j
   }
   return { success, verifiedTerminated: false };
 }
-async function killWindowsTree(pid: number, expected: string): Promise<{ success: boolean; verifiedTerminated: boolean }> {
+async function killWindowsTree(pid: number, expected: string, onDiagnostic?: (message: string) => void): Promise<{ success: boolean; verifiedTerminated: boolean }> {
   const script = String.raw`
 $ErrorActionPreference = 'Stop'
+[Console]::Error.WriteLine('AGY_MCP_STOP_STAGE=ROOT_IDENTITY')
 $handles = [Collections.Generic.List[Diagnostics.Process]]::new()
 $verified = $true
 try {
@@ -123,13 +129,16 @@ try {
   if ($root.StartTime.ToUniversalTime().ToFileTimeUtc().ToString() -ne $env:AGY_STOP_CREATED_AT) {
     [Console]::Out.Write('{"success":true,"verifiedTerminated":true}'); exit
   }
+  [Console]::Error.WriteLine('AGY_MCP_STOP_STAGE=CIM_ENUMERATION')
   $rows = @(Get-CimInstance Win32_Process | Select-Object ProcessId, ParentProcessId, CreationDate)
   $rootRow = $rows | Where-Object { $_.ProcessId -eq $root.Id } | Select-Object -First 1
   $rootTime = $root.StartTime.ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ss.ffffffZ')
   if (-not $rootRow -or $rootRow.CreationDate.ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ss.ffffffZ') -ne $rootTime) {
+    [Console]::Error.WriteLine('AGY_MCP_STOP_STAGE=CIM_ROOT_UNCONFIRMED')
     # 枚举缺项或信息不一致不能证明原实例已停止，保留未确认状态。
     [Console]::Out.Write('{"success":false,"verifiedTerminated":false}'); exit
   }
+  [Console]::Error.WriteLine('AGY_MCP_STOP_STAGE=DESCENDANT_IDENTITIES')
   $selected = [Collections.Generic.List[object]]::new()
   $selected.Add($rootRow)
   for ($i=0; $i -lt $selected.Count; $i++) {
@@ -150,16 +159,27 @@ try {
     } catch [ArgumentException] { if ($process) { $process.Dispose() } }
       catch { if ($process) { $process.Dispose() }; $verified = $false }
   }
+  [Console]::Error.WriteLine('AGY_MCP_STOP_STAGE=TERMINATION')
   foreach ($process in $handles) {
     try { if (-not $process.HasExited) { $process.Kill() }; if (-not $process.WaitForExit(8000)) { $verified = $false } }
     catch { $verified = $false }
   }
+  [Console]::Error.WriteLine('AGY_MCP_STOP_STAGE=COMPLETE;VERIFIED=' + $verified)
   [Console]::Out.Write((@{ success=$verified; verifiedTerminated=$verified } | ConvertTo-Json -Compress))
 } finally { foreach ($process in $handles) { $process.Dispose() } }`;
   try {
-    const { stdout } = await run(powershellPath, ['-NoProfile', '-NonInteractive', '-Command', script],
+    onDiagnostic?.('Windows stop command started: ' + pid);
+    const command = run(powershellPath, ['-NoProfile', '-NonInteractive', '-Command', script],
       { windowsHide: true, timeout: 10000, maxBuffer: 8192, env: { ...process.env, AGY_STOP_PID: String(pid), AGY_STOP_CREATED_AT: expected } });
+    if (onDiagnostic) command.child?.stderr?.on('data', chunk => {
+      try { onDiagnostic(String(chunk).slice(-8192)); } catch { /* 诊断观察者不能中断安全停止。 */ }
+    });
+    const { stdout, stderr } = await command;
     const value = JSON.parse(stdout.trim()) as { success?: boolean; verifiedTerminated?: boolean };
+    if (value.verifiedTerminated !== true) onDiagnostic?.('Windows stop unconfirmed: ' + stderr.slice(-8192));
     return { success: value.success === true, verifiedTerminated: value.verifiedTerminated === true };
-  } catch { return { success: false, verifiedTerminated: false }; }
+  } catch (error) {
+    onDiagnostic?.('Windows stop command failed: ' + String(error));
+    return { success: false, verifiedTerminated: false };
+  }
 }

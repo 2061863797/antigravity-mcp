@@ -970,7 +970,7 @@ $rows = @(foreach ($candidate in ($env:AGY_TEST_PROCESS_IDS -split ',')) {
     const quotaOutput = await connection.client.callTool({ name: 'antigravity_status', arguments: {} });
     assert.deepEqual(JSON.parse((quotaOutput.content as { text: string }[])[0].text), quotaOutput.structuredContent);
     const quota = quotaOutput.structuredContent as { schemaVersion: number; kind: string; data: import('../src/utils/register-tool.js').QuotaResult };
-    assert.equal(quota.schemaVersion, 3); assert.equal(quota.kind, 'quota'); assert.equal(quota.data.status, 'SUCCESS');
+    assert.equal(quota.schemaVersion, 3); assert.equal(quota.kind, 'quota'); assert.equal(quota.data.status, 'SUCCESS', JSON.stringify(quota));
     assert.equal(quota.data.groups[0].buckets[0].remaining_fraction, 0.9); assert(!('taskId' in quota.data));
     savedCode = code;
     assert.deepEqual(fs.readdirSync(workspace).sort(), ['a.txt', 'invocation.args']);

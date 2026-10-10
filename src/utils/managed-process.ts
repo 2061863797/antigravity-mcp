@@ -391,7 +391,12 @@ export async function runManagedProcess(executable: string, args: string[], opti
             child.kill('SIGKILL');
             return identityState(child.pid) === 'EXITED';
           }
-          return (await killProcessTree(child.pid, createdAt, jobToken)).verifiedTerminated;
+          return (await killProcessTree(child.pid, createdAt, jobToken, { onDiagnostic: message => {
+            if (!settled) {
+              stderr = (stderr + '\nAGY_MCP_STOP_DIAGNOSTIC: ' + message).slice(-8192);
+              if (/^[\uDC00-\uDFFF]/.test(stderr)) stderr = stderr.slice(1);
+            }
+          } })).verifiedTerminated;
         })().catch(() => { error = 'PROCESS_TERMINATION_UNCONFIRMED'; return false; });
       }
     };

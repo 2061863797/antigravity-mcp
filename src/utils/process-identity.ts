@@ -15,17 +15,22 @@ export function rememberIdentity(pid: number, createdAt?: string): void {
   if (cache.size > 1024) cache.delete(cache.keys().next().value!);
   if (pid === process.pid && createdAt) selfCreatedAt = createdAt;
 }
-export function captureCreatedAt(pid: number): string | undefined {
+export function captureCreatedAt(pid: number, onDiagnostic?: (message: string) => void): string | undefined {
   if (process.platform !== 'win32' || !pidExists(pid)) return undefined;
   if (pid === process.pid && selfCreatedAt) return selfCreatedAt;
   let createdAt: string | undefined;
+  onDiagnostic?.('Windows identity read started: ' + pid);
   try {
     const output = childProcess.execFileSync(powershellPath, ['-NoProfile', '-NonInteractive', '-Command',
       "$ErrorActionPreference='Stop';$p=[Diagnostics.Process]::GetProcessById([int]$env:AGY_IDENTITY_PID);try{$handle=$p.Handle;[Console]::Out.Write($p.StartTime.ToUniversalTime().ToFileTimeUtc().ToString())}finally{$p.Dispose()}"],
-    { windowsHide: true, encoding: 'utf8', timeout: 5000, maxBuffer: 8192, stdio: ['ignore', 'pipe', 'ignore'],
+    { windowsHide: true, encoding: 'utf8', timeout: 5000, maxBuffer: 8192, stdio: ['ignore', 'pipe', onDiagnostic ? 'pipe' : 'ignore'],
       env: { ...process.env, AGY_IDENTITY_PID: String(pid) } }).trim();
     if (/^[0-9]{1,30}$/.test(output)) createdAt = output;
-  } catch { /* 存活但无法取得创建标识时，必须保持 UNKNOWN。 */ }
+    else onDiagnostic?.('Windows identity read returned invalid output: ' + output.slice(-8192));
+  } catch (error) {
+    // 存活但无法取得创建标识时，必须保持 UNKNOWN；诊断不改变身份判定。
+    onDiagnostic?.('Windows identity read failed: ' + String(error));
+  }
   rememberIdentity(pid, createdAt);
   return createdAt;
 }
@@ -37,7 +42,7 @@ export function requireSelfIdentity(): string | undefined {
   if (process.platform === 'win32' && !createdAt) throw new Error('PROCESS_IDENTITY_UNAVAILABLE: cannot read this process creation time');
   return createdAt;
 }
-export function identityState(pid: number, expected?: string, heartbeatAt?: number, force = false): IdentityState {
+export function identityState(pid: number, expected?: string, heartbeatAt?: number, force = false, onDiagnostic?: (message: string) => void): IdentityState {
   if (!pidExists(pid)) { cache.delete(pid); return 'EXITED'; }
   if (process.platform !== 'win32') return 'ALIVE';
   if (!expected) return 'UNKNOWN';
@@ -48,7 +53,7 @@ export function identityState(pid: number, expected?: string, heartbeatAt?: numb
   const freshHeartbeat = entry?.createdAt === expected && heartbeatAge >= 0 && heartbeatAge <= 3000;
   const cacheAge = entry ? Date.now() - entry.checkedAt : Infinity;
   const current = !force && entry && (freshHeartbeat || cacheAge >= 0 && cacheAge < 1000)
-    ? entry.createdAt : captureCreatedAt(pid);
+    ? entry.createdAt : captureCreatedAt(pid, onDiagnostic);
   if (!current) return pidExists(pid) ? 'UNKNOWN' : 'EXITED';
   return current === expected ? 'ALIVE' : 'EXITED';
 }
