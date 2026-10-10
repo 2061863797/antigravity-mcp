@@ -293,6 +293,8 @@ export async function runManagedProcess(executable: string, args: string[], opti
       for (const key of pathKeys) delete env[key];
       env.Path = [path.dirname(process.execPath), inheritedPath, path.join(process.env.SystemRoot ?? 'C:\\Windows', 'System32')].filter(Boolean).join(path.delimiter);
     }
+    const jobToken = process.platform === 'win32' ? undefined : crypto.randomUUID();
+    if (jobToken) env.AGY_MCP_JOB_TOKEN = jobToken;
     const workingDir = options.cwd ?? process.cwd();
 
     let child: ReturnType<typeof spawn>;
@@ -349,7 +351,7 @@ export async function runManagedProcess(executable: string, args: string[], opti
             child.kill('SIGKILL');
             return identityState(child.pid) === 'EXITED';
           }
-          return (await killProcessTree(child.pid, createdAt)).verifiedTerminated;
+          return (await killProcessTree(child.pid, createdAt, jobToken)).verifiedTerminated;
         })().catch(() => { error = 'PROCESS_TERMINATION_UNCONFIRMED'; return false; });
       }
     };
@@ -385,7 +387,7 @@ export async function runManagedProcess(executable: string, args: string[], opti
       let verified = stopping ? await stopping : error !== 'PROCESS_TERMINATION_UNCONFIRMED';
       // Windows launcher owns a kill-on-close job, including detached descendants.
       if (process.platform !== 'win32') {
-        if (child.pid !== undefined && !(await killProcessTree(child.pid)).verifiedTerminated) verified = false;
+        if (child.pid !== undefined && !(await killProcessTree(child.pid, undefined, jobToken)).verifiedTerminated) verified = false;
       }
 
       if (!verified) error = 'PROCESS_TERMINATION_UNCONFIRMED';

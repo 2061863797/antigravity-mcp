@@ -1,3 +1,4 @@
+import fs from 'node:fs';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { captureCreatedAt, identityState, powershellPath } from './process-identity.js';
@@ -62,7 +63,19 @@ export async function findDescendantPids(rootPid: number): Promise<number[]> {
   }
 }
 
-export async function killProcessTree(pid: number, expectedCreatedAt?: string): Promise<{ success: boolean; verifiedTerminated: boolean }> {
+// Linux：环境变量会跨 setsid / 重新认父继承，可据此找到已脱离进程树的逃逸后代。
+export async function findPidsByEnvToken(token: string): Promise<number[]> {
+  if (process.platform !== 'linux') return [];
+  const needle = Buffer.from('AGY_MCP_JOB_TOKEN=' + token + '\0');
+  const found: number[] = [];
+  for (const name of await fs.promises.readdir('/proc').catch(() => [] as string[])) {
+    if (!/^[1-9][0-9]*$/.test(name) || Number(name) === process.pid) continue;
+    try { if ((await fs.promises.readFile('/proc/' + name + '/environ')).includes(needle)) found.push(Number(name)); } catch { /* 已退出或无权读取 */ }
+  }
+  return found;
+}
+
+export async function killProcessTree(pid: number, expectedCreatedAt?: string, jobToken?: string): Promise<{ success: boolean; verifiedTerminated: boolean }> {
   if (!Number.isSafeInteger(pid) || pid <= 0) return { success: false, verifiedTerminated: false };
   if (process.platform === 'win32') {
     const expected = expectedCreatedAt ?? captureCreatedAt(pid);
@@ -80,7 +93,8 @@ export async function killProcessTree(pid: number, expectedCreatedAt?: string): 
     } catch {}
     return { success: false, verifiedTerminated: false };
   }
-  const targets = [pid, ...descendants];
+  const escaped = jobToken ? await findPidsByEnvToken(jobToken) : [];
+  const targets = [...new Set([pid, ...descendants, ...escaped])];
   let success = false;
   for (const target of targets) {
     if (!await isProcessAlive(target)) continue;
