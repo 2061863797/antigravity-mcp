@@ -34,7 +34,9 @@ export async function queryNativeQuota(executable: string, prefix: string[], opt
     code = !output.stopped ? 'PROCESS_TERMINATION_UNCONFIRMED' : options.signal?.aborted ? 'CANCELLED'
       : output.error === 'TIMEOUT' ? 'TIMEOUT' : parser.protocolError ? 'CLI_OUTPUT_INVALID' : 'QUOTA_QUERY_FAILED';
     if (!output.stopped || output.error || output.exitCode !== 0 || envelope?.status !== 'SUCCESS' || envelope.error?.trim() || !envelope.command || envelope.conversation_id) {
-      throw new Error(envelope?.error || parser.protocolError || output.error || output.stderr.trim() || 'Native /usage query failed');
+      const message = envelope?.error || parser.protocolError || output.error || output.stderr.trim() || 'Native /usage query failed';
+      const diagnostic = !output.stopped && output.stderr.includes('AGY_MCP_STOP_DIAGNOSTIC:') ? '\n' + output.stderr.trim() : '';
+      throw new Error(message + diagnostic);
     }
     return quotaSnapshot(envelope.command.data);
   } catch (error) {

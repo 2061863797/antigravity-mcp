@@ -119,7 +119,8 @@ test('Windows plugin ZIP relocates with metadata, production dependencies and or
       if (diagnostics) {
         const result = data(output);
         console.error('[CI_PACKAGE_CALL_END]', JSON.stringify({ tool: name, taskId: result.taskId, status: result.status,
-          phase: result.currentPhase, managedProcess: result.managedProcess, errorCode: result.errorCode, errorMessage: result.errorMessage }));
+          phase: result.currentPhase, managedProcess: result.managedProcess, errorCode: result.errorCode, errorMessage: result.errorMessage,
+          ...(result.errorCode ? { stderrTail: result.stderrTail } : {}) }));
       }
       return output;
     };
