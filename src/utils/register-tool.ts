@@ -80,6 +80,8 @@ export function payloadStatus(kind: 'task' | 'quota', data: TaskResult | TaskSum
 }
 function suggestNextAction(result: TaskResult): string {
   const code = result.errorCode;
+  if (code === 'AGY_VERSION_UNSUPPORTED') return '按错误信息升级 agy 后重新提交；保持所选模型和后端，不自动重试。';
+  if (code === 'AGY_VERSION_UNREADABLE') return '检查 AGY_PATH 与 agy --version 输出；必要时由用户明确设置 ANTIGRAVITY_SKIP_VERSION_CHECK=1 跳过版本预检，不自动重试。';
   if (code === 'CLI_QUOTA_EXHAUSTED') return '额度不足，已有文件和已取得的会话保留。请用户选择由父 agent 接手，或等待额度恢复后在原目录使用原会话续接；选择前不要自动重试、换模型或接手。';
   if (code === 'PROCESS_TERMINATION_UNCONFIRMED' || code === 'LEASE_RELEASE_FAILED') return '继续查询并重试取消；确认进程停止和目录占用释放前，不重新提交。';
   if (code === 'WORKSPACE_BUSY') return '等待占用目录的任务结束，或用该任务 ID 在本机查询并明确取消；确认目录释放后再提交，不要重复执行。';

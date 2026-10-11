@@ -907,6 +907,7 @@ test('production stdio uses a fake executable for code, direct ask, continuation
     'using System; using System.IO; using System.Text; using System.Diagnostics; using System.Threading;',
     'public class Program { public static void Main(string[] args) {',
     'Console.OutputEncoding=new UTF8Encoding(false); int p=Array.IndexOf(args,"-p"); string prompt=p<0?"":args[p+1];',
+    'if(Array.IndexOf(args,"--version")>=0){Console.WriteLine("agy 1.3.0");return;}',
     'if(prompt=="/usage"){Console.WriteLine("{\\"event\\":\\"result\\",\\"result\\":{\\"status\\":\\"SUCCESS\\",\\"response\\":\\"quota\\",\\"conversation_id\\":\\"\\",\\"command\\":{\\"name\\":\\"usage\\",\\"data\\":{\\"groups\\":[{\\"name\\":\\"Gemini Models\\",\\"buckets\\":[{\\"id\\":\\"gemini-weekly\\",\\"name\\":\\"Weekly\\",\\"window\\":\\"weekly\\",\\"remaining_fraction\\":0.9,\\"reset_time\\":\\"2050-10-13T14:27:34Z\\"}]}]}}}} ");return;}',
     'File.WriteAllLines("invocation.args",args);',
     'int c=Array.IndexOf(args,"--conversation"); string id=c<0?Guid.NewGuid().ToString():args[c+1];',

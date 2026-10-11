@@ -18,6 +18,7 @@ import { stateHome, taskFile, writeJson, removeTaskInput } from './utils/task-st
 import { isQuotaExhaustion } from './utils/native-quota.js';
 import { knownCreatedAt, identityState } from './utils/process-identity.js';
 import { killProcessTree } from './utils/process-killer.js';
+import { ensureAgyVersion } from './utils/agy-version.js';
 
 export interface AgyExecuteOptions {
   prompt: string; context?: string; workspaceDir: string; model?: string; effort?: 'low' | 'medium' | 'high' | 'xhigh' | 'max';
@@ -146,6 +147,11 @@ export async function executeAgy(input: AgyExecuteOptions, workerTaskId?: string
   failureStage = 'PREPARING';
   let leased = false, task: TaskRecord;
   try {
+    // 提交方在获取租约前完成预检；worker 继续使用已经通过预检的同一命令。
+    if (!workerTaskId) {
+      await ensureAgyVersion(executable, options.cliArgsPrefix, { cwd: workspace, signal: options.requestSignal });
+      if (options.requestSignal?.aborted) throw new Error('CANCELLED');
+    }
     if (workerTaskId) {
       task = taskTracker.get(taskId)!;
       if (!task?.lease) throw new Error('WORKER_BINDING_INVALID');
@@ -162,7 +168,7 @@ export async function executeAgy(input: AgyExecuteOptions, workerTaskId?: string
   } catch (error) {
     if (leased) releaseWorkspaceLease(taskId);
     const code = failureCode(error);
-    return normalizeResult({ status: 'ERROR', executionStatus: code, errorCode: code, errorMessage: String(error), failureStage,
+    return normalizeResult({ status: code === 'CANCELLED' ? 'CANCELLED' : 'ERROR', executionStatus: code, errorCode: code, errorMessage: String(error), failureStage,
       response: String(error), workspaceDir: source, executionWorkspaceDir: workspace, conversationId: options.conversationId ?? null });
   }
   if (!workerTaskId) {

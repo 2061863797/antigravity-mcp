@@ -26,7 +26,7 @@ MCP 负责启动 agy、交付进度与结果、管理后台任务和停止进程
 ## 环境要求
 
 - **Node.js 20+** 和 npm。
-- 已安装并登录的 **agy CLI**，支持官方 `stream-json` 输出。
+- 已安装并登录的 **agy CLI 1.1.15 或更高版本**，支持官方 `stream-json` 输出。
 - 支持本地 stdio 的 MCP 客户端，例如 Codex。
 - Windows 是主要验证平台；Windows worker 需要 PowerShell 和 CIM/WMI 可用。其他平台未完成同等实机验收。
 
@@ -82,6 +82,10 @@ AGY_PATH = "C:/Tools/agy/agy.exe"
 ```
 
 `AGY_PATH` 必须指向实际可执行文件；路径错误会直接失败，不换用其他后端。
+
+提交任务前会用同一可执行文件和参数前缀调用 `--version`，10 秒超时，Windows 隐藏窗口；预检通过后才获取工作区租约。无任务 ID 的原生额度查询也使用此检查。版本过低返回 `AGY_VERSION_UNSUPPORTED`，信息包含当前版本和最低版本；执行失败、输出不可解析或出现多个不同版本时返回 `AGY_VERSION_UNREADABLE`。成功结果按可执行文件路径和修改时间缓存；有包装脚本时也区分参数前缀与脚本修改时间，失败结果不缓存。
+
+最低版本 `1.1.15` 根据 [agy 官方 changelog](https://www.antigravity.google/docs/changelog?tab=cli)核实：它修复非 ASCII 的 stream-json 文本，此前版本已经加入 `--effort`、stream-json、禁用斜杠命令和原生额度输出，并修复无头运行忽略 `--mode`。这是文档核查；真实 CLI 的兼容性仍须人工验证。必要时由用户明确设置 `ANTIGRAVITY_SKIP_VERSION_CHECK=1` 跳过预检；默认执行检查，不自动重试、换模型或切换后端。
 
 ## 使用示例
 

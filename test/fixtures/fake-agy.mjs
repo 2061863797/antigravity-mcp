@@ -4,6 +4,11 @@ import crypto from 'node:crypto';
 import os from 'node:os';
 import { spawn } from 'node:child_process';
 const args = process.argv.slice(2), prompt = args[args.indexOf('-p') + 1] ?? '';
+if (args.includes('--version')) {
+  if (process.env.TEST_VERSION_STARTS) fs.appendFileSync(process.env.TEST_VERSION_STARTS, 'version\n');
+  console.log(process.env.TEST_AGY_VERSION ?? 'agy 1.3.0');
+  process.exit(0);
+}
 const input = JSON.parse(prompt.split('\n').find(line => line.startsWith('FIXTURE:'))?.slice(8) ?? '{}');
 if (prompt === '/usage') {
   const file = path.resolve('.quota-fixture.json'), fixture = fs.existsSync(file) ? JSON.parse(fs.readFileSync(file, 'utf8')) : {};

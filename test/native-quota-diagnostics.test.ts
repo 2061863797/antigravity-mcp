@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import childProcess from 'node:child_process';
+import { promisify } from 'node:util';
 import { EventEmitter } from 'node:events';
 import { PassThrough } from 'node:stream';
 import { syncBuiltinESMExports } from 'node:module';
@@ -18,6 +19,10 @@ test('native quota retains stop diagnostics in its existing error message withou
   let calls = 0;
   const diagnostic = 'AGY_MCP_STOP_DIAGNOSTIC: AGY_MCP_STOP_STAGE=CIM_ENUMERATION';
   const command = { name: 'usage', data: { groups: [] } };
+  const version = () => { throw new Error('Expected the promisified version check'); };
+  const originalExec = childProcess.execFile;
+  Object.defineProperty(version, promisify.custom, { value: async () => ({ stdout: 'agy 1.3.0', stderr: '' }) });
+  childProcess.execFile = version as unknown as typeof originalExec;
   t.mock.method(childProcess, 'execFileSync', () => '134000000000000000');
   t.mock.method(childProcess, 'spawn', (_file: string, _args: string[], options: childProcess.SpawnOptions) => {
     calls++;
@@ -34,7 +39,7 @@ test('native quota retains stop diagnostics in its existing error message withou
   });
   syncBuiltinESMExports();
   try {
-    const result = await queryNativeQuota('fixture-only.exe', [], { cwd: directory });
+    const result = await queryNativeQuota(process.execPath, [], { cwd: directory });
     assert.equal(result.status, 'ERROR');
     assert.equal(result.errorCode, 'PROCESS_TERMINATION_UNCONFIRMED');
     assert.match(result.errorMessage!, /^PROCESS_TERMINATION_UNCONFIRMED\n/);
@@ -44,6 +49,7 @@ test('native quota retains stop diagnostics in its existing error message withou
     assert.deepEqual(QuotaResultSchema.parse(result), result);
     assert(!('stderrTail' in result));
   } finally {
+    childProcess.execFile = originalExec;
     t.mock.restoreAll();
     syncBuiltinESMExports();
     if (previousHome === undefined) delete process.env.ANTIGRAVITY_MCP_STATE_HOME;
