@@ -202,6 +202,8 @@ worker 意外崩溃后的自动后代清理目前仅 Windows 支持。POSIX 没�
 
 `ask` / `code` 必须提供 `prompt` 和已存在目录的绝对路径 `workspace_dir`。
 
+工作目录安全检查按 `realpath` 后的实际路径判断，链接不能绕过：所有平台拒绝驱动器根目录和当前用户家目录本身（家目录的子目录允许）；Windows 拒绝系统目录和 Program Files；POSIX 拒绝 `/etc`、`/usr`、`/bin`、`/sbin`、`/lib`、`/var`、`/System`、`/Library`、`/private` 本身及其子目录，但系统临时目录（如 macOS 位于 `/private/var/folders` 下的 `TMPDIR`）的子目录除外。
+
 | 参数 | 默认值 / 限制 | 说明 |
 | --- | --- | --- |
 | `context` | 可选，最多 20,000 字符 | 必要上下文、修改范围和验收要求 |
