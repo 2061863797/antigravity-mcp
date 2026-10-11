@@ -269,6 +269,8 @@ CI 使用 `ANTIGRAVITY_TEST_DIAGNOSTICS=1` 记录插件包装验收的调用阶�
 
 Windows 停止未确认时，现有 `stderrTail` 保留 `AGY_MCP_STOP_DIAGNOSTIC`，区分身份读取、CIM 枚举和终止阶段。诊断保留原有创建标识、停止校验与期限，不能将未确认状态视为已经停止。
 
+Windows Job 启动器与停止辅助脚本通过 `$PSHOME` 的明确路径加载自带模块，启动器使用 .NET API 清除私有环境变量，避免启动和取消依赖用户或全局模块的自动发现。
+
 原生额度查询没有 `stderrTail` 字段；其停止未确认的诊断附在现有 `errorMessage` 中。CI 包装调用失败时也打印现有 `stderrTail`，以保留停止阶段信息。
 
 测试收尾使用 PID 和保存的创建标识确认原 worker 退出；PID 被复用时，新的无关实例保持原状。同一实例存活或身份未知时仍等待，超时日志保留任务 ID、PID、预期和实际创建标识，15 秒期限不变。

@@ -129,6 +129,9 @@ try {
   if ($root.StartTime.ToUniversalTime().ToFileTimeUtc().ToString() -ne $env:AGY_STOP_CREATED_AT) {
     [Console]::Out.Write('{"success":true,"verifiedTerminated":true}'); exit
   }
+  [Console]::Error.WriteLine('AGY_MCP_STOP_STAGE=CIM_MODULE')
+  Import-Module -Name ($PSHOME + '\Modules\Microsoft.PowerShell.Utility\Microsoft.PowerShell.Utility.psd1') -ErrorAction Stop
+  Import-Module -Name ($PSHOME + '\Modules\CimCmdlets\CimCmdlets.psd1') -ErrorAction Stop
   [Console]::Error.WriteLine('AGY_MCP_STOP_STAGE=CIM_ENUMERATION')
   $rows = @(Get-CimInstance Win32_Process | Select-Object ProcessId, ParentProcessId, CreationDate)
   $rootRow = $rows | Where-Object { $_.ProcessId -eq $root.Id } | Select-Object -First 1

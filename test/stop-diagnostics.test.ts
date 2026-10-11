@@ -6,10 +6,11 @@ import { syncBuiltinESMExports } from 'node:module';
 import { captureCreatedAt, identityState } from '../src/utils/process-identity.js';
 
 const original = childProcess.execFile;
-let commandFailure: Error | undefined, commandCalls = 0;
+let commandFailure: Error | undefined, commandCalls = 0, disableAutoload = false;
 const shim = () => { throw new Error('Expected the promisified stop call'); };
-Object.defineProperty(shim, promisify.custom, { value: async (file: string, args: string[], options: childProcess.ExecFileOptions) => {
-  if (!commandFailure) return promisify(original)(file, args, options);
+Object.defineProperty(shim, promisify.custom, { value: (file: string, args: string[], options: childProcess.ExecFileOptions) => {
+  if (!commandFailure) return promisify(original)(file, disableAutoload
+    ? [...args.slice(0, -1), "$PSModuleAutoLoadingPreference = 'None'\n" + args.at(-1)] : args, options);
   commandCalls++;
   assert.equal(options.timeout, 10000); assert.equal(options.windowsHide, true);
   throw commandFailure;
@@ -60,5 +61,17 @@ test('Windows stop command diagnostics preserve unconfirmed termination and reta
       assert.equal(commandCalls, 1); assert(messages.some(message => message.includes('AGY_MCP_STOP_STAGE=CIM_ENUMERATION')));
       assert.doesNotThrow(() => process.kill(pid, 0));
     } finally { commandFailure = undefined; }
+  });
+});
+
+test('Windows tree termination verifies the original process without module autoload', windowsOnly, async () => {
+  await withChild(async (pid, createdAt) => {
+    const messages: string[] = []; disableAutoload = true;
+    try {
+      assert.deepEqual(await killProcessTree(pid, createdAt, undefined, { onDiagnostic: message => messages.push(message) }),
+        { success: true, verifiedTerminated: true });
+      assert.equal(identityState(pid, createdAt, undefined, true), 'EXITED');
+      assert(messages.some(message => message.includes('AGY_MCP_STOP_STAGE=COMPLETE;VERIFIED=True')));
+    } finally { disableAutoload = false; }
   });
 });

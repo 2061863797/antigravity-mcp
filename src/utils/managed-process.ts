@@ -74,6 +74,7 @@ try {
 }
 
 const LAUNCHER_CONTENT = `$ErrorActionPreference = "Stop"
+Import-Module -Name ($PSHOME + '\\Modules\\Microsoft.PowerShell.Utility\\Microsoft.PowerShell.Utility.psd1') -ErrorAction Stop
 $originalTemp = [Environment]::GetEnvironmentVariable('TEMP', [EnvironmentVariableTarget]::Process)
 $originalTmp = [Environment]::GetEnvironmentVariable('TMP', [EnvironmentVariableTarget]::Process)
 $compilerTemp = [IO.Path]::GetTempPath()
@@ -288,14 +289,14 @@ public class SuspendedJobLauncher {
     [Environment]::SetEnvironmentVariable('TMP', $originalTmp, [EnvironmentVariableTarget]::Process)
 }
 
-$cmdLine = $env:AGY_MCP_COMMANDLINE
-$cwd = $env:AGY_MCP_CWD
-$ownerPid = [int]$env:AGY_MCP_OWNER_PID
-$ownerCreatedAt = $env:AGY_MCP_OWNER_CREATED_AT
-Remove-Item Env:AGY_MCP_COMMANDLINE
-Remove-Item Env:AGY_MCP_CWD
-Remove-Item Env:AGY_MCP_OWNER_PID
-Remove-Item Env:AGY_MCP_OWNER_CREATED_AT
+$cmdLine = [Environment]::GetEnvironmentVariable('AGY_MCP_COMMANDLINE', [EnvironmentVariableTarget]::Process)
+$cwd = [Environment]::GetEnvironmentVariable('AGY_MCP_CWD', [EnvironmentVariableTarget]::Process)
+$ownerPid = [int][Environment]::GetEnvironmentVariable('AGY_MCP_OWNER_PID', [EnvironmentVariableTarget]::Process)
+$ownerCreatedAt = [Environment]::GetEnvironmentVariable('AGY_MCP_OWNER_CREATED_AT', [EnvironmentVariableTarget]::Process)
+[Environment]::SetEnvironmentVariable('AGY_MCP_COMMANDLINE', $null, [EnvironmentVariableTarget]::Process)
+[Environment]::SetEnvironmentVariable('AGY_MCP_CWD', $null, [EnvironmentVariableTarget]::Process)
+[Environment]::SetEnvironmentVariable('AGY_MCP_OWNER_PID', $null, [EnvironmentVariableTarget]::Process)
+[Environment]::SetEnvironmentVariable('AGY_MCP_OWNER_CREATED_AT', $null, [EnvironmentVariableTarget]::Process)
 $pidOut = 0
 try {
     $code = [SuspendedJobLauncher]::RunInJob($cmdLine, $cwd, $ownerPid, $ownerCreatedAt, [ref]$pidOut)
