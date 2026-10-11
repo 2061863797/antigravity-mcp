@@ -7,7 +7,7 @@ import { stateHome } from './task-store.js';
 
 import crypto from 'node:crypto';
 import { StringDecoder } from 'node:string_decoder';
-import { captureCreatedAt, rememberIdentity, requireSelfIdentity, identityState } from './process-identity.js';
+import { captureCreatedAt, rememberIdentity, requireSelfIdentity, identityState, powershellPath } from './process-identity.js';
 
 export interface ProcessResult {
   stdout: string; stderr: string; exitCode: number | null; error?: string; stopped: boolean;
@@ -52,10 +52,9 @@ try {
     [Console]::Out.Write((@{ pid = $created.ProcessId; createdAt = $worker.StartTime.ToUniversalTime().ToFileTimeUtc().ToString() } | ConvertTo-Json -Compress))
 } finally { $worker.Dispose() }
 [Console]::Error.WriteLine('AGY_MCP_WORKER_STAGE=COMPLETE')`;
-  const powershell = path.join(process.env.SystemRoot ?? 'C:\\Windows', 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe');
   let stdout: string;
   try {
-    ({ stdout } = await promisify(execFile)(powershell, ['-NoProfile', '-NonInteractive', '-Command', script], {
+    ({ stdout } = await promisify(execFile)(powershellPath, ['-NoProfile', '-NonInteractive', '-Command', script], {
       windowsHide: true, timeout: 10000, maxBuffer: 8192,
       env: { ...env, AGY_MCP_WORKER_COMMAND: formatCommandLine(executable, args), AGY_MCP_WORKER_CWD: cwd }
     }));
@@ -360,7 +359,7 @@ export async function runManagedProcess(executable: string, args: string[], opti
       env.AGY_MCP_CWD = workingDir;
       env.AGY_MCP_OWNER_PID = String(process.pid);
       env.AGY_MCP_OWNER_CREATED_AT = requireSelfIdentity();
-      child = spawn(path.join(process.env.SystemRoot ?? 'C:\\Windows', 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe'), [
+      child = spawn(powershellPath, [
         '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', launcherPath
       ], { cwd: workingDir, env, windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'] });
       spawnedAt = Date.now();

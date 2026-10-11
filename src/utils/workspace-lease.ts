@@ -66,9 +66,7 @@ export function updateLeaseChild(taskId: string, pid: number, add: boolean, crea
   item.lease.children = add ? [...new Set([...item.lease.children, pid])] : item.lease.children.filter(p => p !== pid);
   if (add && createdAt) (item.lease.childCreatedAt ??= {})[pid] = createdAt;
   if (!add && item.lease.childCreatedAt) delete item.lease.childCreatedAt[pid];
-  const temp = `${item.file}.${process.pid}.${crypto.randomUUID()}.tmp`;
-  try { fs.writeFileSync(temp, JSON.stringify(item.lease), { flag: 'wx' }); fs.renameSync(temp, item.file); }
-  catch (error) { try { fs.unlinkSync(temp); } catch { /* best effort for owned temp file */ } throw error; }
+  writeJson(item.file, item.lease);
 }
 export function releaseWorkspaceLease(taskId: string): void {
   const item = owned.get(taskId); if (!item) return;

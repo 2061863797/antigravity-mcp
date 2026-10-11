@@ -1,63 +1,28 @@
 import fs from 'node:fs';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
-import { captureCreatedAt, identityState, powershellPath } from './process-identity.js';
+import { captureCreatedAt, identityState, pidExists, powershellPath } from './process-identity.js';
 const run = promisify(execFile);
 
 export async function isProcessAlive(pid: number): Promise<boolean> {
-  if (!Number.isSafeInteger(pid) || pid <= 0) return false;
-  try { process.kill(pid, 0); return true; }
-  catch (e) { if ((e as NodeJS.ErrnoException).code === 'ESRCH') return false; return true; }
+  return pidExists(pid);
 }
 
-export async function findDescendantPids(rootPid: number): Promise<number[]> {
-  if (!Number.isSafeInteger(rootPid) || rootPid <= 0) return [];
+// 仅 POSIX 使用：Windows 由 killWindowsTree 按 CIM 父子关系和创建标识处理。
+async function findDescendantPids(rootPid: number): Promise<number[]> {
   try {
     const parentMap = new Map<number, number[]>();
-    if (process.platform === 'win32') {
-      const { stdout } = await run('powershell.exe', [
-        '-NoProfile',
-        '-Command',
-        'Get-CimInstance Win32_Process | Select-Object ProcessId,ParentProcessId | ConvertTo-Json -Compress'
-      ], { windowsHide: true, timeout: 5000 });
-      const parsed = JSON.parse(stdout.trim());
-      const items = Array.isArray(parsed) ? parsed : [parsed];
-      for (const item of items) {
-        const pid = item.ProcessId;
-        const ppid = item.ParentProcessId;
-        if (typeof pid === 'number' && typeof ppid === 'number') {
-          if (!parentMap.has(ppid)) parentMap.set(ppid, []);
-          parentMap.get(ppid)!.push(pid);
-        }
-      }
-    } else {
-      const { stdout } = await run('ps', ['-eo', 'pid,ppid']);
-      const lines = stdout.trim().split(/\r?\n/);
-      for (const line of lines) {
-        const parts = line.trim().split(/\s+/);
-        if (parts.length >= 2) {
-          const pid = parseInt(parts[0], 10);
-          const ppid = parseInt(parts[1], 10);
-          if (Number.isSafeInteger(pid) && Number.isSafeInteger(ppid)) {
-            if (!parentMap.has(ppid)) parentMap.set(ppid, []);
-            parentMap.get(ppid)!.push(pid);
-          }
-        }
+    for (const line of (await run('ps', ['-eo', 'pid,ppid'])).stdout.trim().split(/\r?\n/)) {
+      const [pid, ppid] = line.trim().split(/\s+/).map(value => parseInt(value, 10));
+      if (Number.isSafeInteger(pid) && Number.isSafeInteger(ppid)) parentMap.set(ppid, [...parentMap.get(ppid) ?? [], pid]);
+    }
+    const descendants = new Set<number>(), queue = [rootPid];
+    while (queue.length) {
+      for (const child of parentMap.get(queue.shift()!) ?? []) {
+        if (!descendants.has(child)) { descendants.add(child); queue.push(child); }
       }
     }
-    const descendants: number[] = [];
-    const queue = [rootPid];
-    while (queue.length > 0) {
-      const curr = queue.shift()!;
-      const children = parentMap.get(curr) || [];
-      for (const child of children) {
-        if (!descendants.includes(child)) {
-          descendants.push(child);
-          queue.push(child);
-        }
-      }
-    }
-    return descendants;
+    return [...descendants];
   } catch (err) {
     throw new Error(`Process enumeration failed: ${String(err)}`);
   }

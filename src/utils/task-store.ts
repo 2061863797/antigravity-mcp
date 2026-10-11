@@ -3,7 +3,7 @@ import path from 'node:path';
 import os from 'node:os';
 import crypto from 'node:crypto';
 import { z } from 'zod';
-import { ResultSchema, type TaskResult } from './register-tool.js';
+import { ResultSchema } from './register-tool.js';
 
 export const stateHome = (): string => {
   const directory = process.env.ANTIGRAVITY_MCP_STATE_HOME ?? os.homedir();

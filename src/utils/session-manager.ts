@@ -3,7 +3,7 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 import { z } from 'zod';
 import { canonicalPath } from './paths.js';
-import { stateHome } from './task-store.js';
+import { stateHome, writeJson } from './task-store.js';
 
 const SessionSchema = z.object({ conversationId: z.string().min(1).max(256), workspaceDir: z.string().min(1),
   // 仅用于读取旧隔离会话的源目录别名；新会话只绑定实际目录。
@@ -51,11 +51,8 @@ class SessionManager {
     const record = SessionSchema.parse({ conversationId: id, workspaceDir: canonicalPath(workspaceDir),
       sourceWorkspaceDir: existing?.sourceWorkspaceDir, taskId: taskId ?? existing?.taskId,
       model: settings?.model ?? existing?.model, effort: settings?.effort ?? existing?.effort });
-    const temp = file + '.' + crypto.randomUUID() + '.tmp';
-    try {
-      try { fs.mkdirSync(path.dirname(file), { recursive: true }); fs.writeFileSync(temp, JSON.stringify(record), { flag: 'wx' }); fs.renameSync(temp, file); }
-      finally { if (fs.existsSync(temp)) fs.unlinkSync(temp); }
-    } catch (error) { throw new Error('CONVERSATION_SAVE_FAILED: ' + String(error)); }
+    try { writeJson(file, record); }
+    catch (error) { throw new Error('CONVERSATION_SAVE_FAILED: ' + String(error)); }
   }
 }
 export const sessionManager = new SessionManager();

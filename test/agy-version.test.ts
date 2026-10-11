@@ -98,7 +98,7 @@ test('execution and quota reject unsupported versions before a lease, model or u
   });
 });
 
-test('version timeout is bounded, hidden and not retried; aborted preflight starts nothing', async t => {
+test('version timeout is bounded, hidden and not retried; aborted preflight starts nothing', async () => {
   await fixture(async (directory, cli, calls) => {
     let attempts = 0;
     const original = childProcess.execFile;
