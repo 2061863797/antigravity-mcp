@@ -112,7 +112,18 @@ test('Windows plugin ZIP relocates with metadata, production dependencies and or
       return (response.structuredContent.kind === 'task' ? response.structuredContent.data : response.structuredContent) as TaskResult & Partial<TaskSummary>;
     };
     const prompt = (options: unknown) => 'FIXTURE:' + JSON.stringify(options);
-    const call = (client: Client, name: string, args: Record<string, unknown>) => client.callTool({ name, arguments: args });
+    const call = async (client: Client, name: string, args: Record<string, unknown>) => {
+      const diagnostics = process.env.ANTIGRAVITY_TEST_DIAGNOSTICS === '1';
+      if (diagnostics) console.error('[CI_PACKAGE_CALL_BEGIN]', name, args.task_id ?? '');
+      const output = await client.callTool({ name, arguments: args });
+      if (diagnostics) {
+        const result = data(output);
+        console.error('[CI_PACKAGE_CALL_END]', JSON.stringify({ tool: name, taskId: result.taskId, status: result.status,
+          phase: result.currentPhase, managedProcess: result.managedProcess, errorCode: result.errorCode, errorMessage: result.errorMessage,
+          ...(result.errorCode ? { stderrTail: result.stderrTail } : {}) }));
+      }
+      return output;
+    };
     let client = await connect(); let activeId: string | undefined;
     try {
       assert.deepEqual((await client.listTools()).tools.map(tool => tool.name).sort(),

@@ -4,7 +4,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import crypto from 'node:crypto';
-import { spawn } from 'node:child_process';
+import { spawn, execFileSync } from 'node:child_process';
 import { createRequire } from 'node:module';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
@@ -18,6 +18,7 @@ const { taskTracker, TaskTracker } = await import('../src/utils/task-tracker.js'
 const { acquireWorkspaceLease, releaseWorkspaceLease } = await import('../src/utils/workspace-lease.js');
 const { runManagedProcess, startWindowsWorker } = await import('../src/utils/managed-process.js');
 const { isProcessAlive, killProcessTree } = await import('../src/utils/process-killer.js');
+const { captureCreatedAt, identityState } = await import('../src/utils/process-identity.js');
 const { ConfigManager } = await import('../src/utils/config-manager.js');
 const { sessionManager } = await import('../src/utils/session-manager.js');
 const { queryNativeQuota } = await import('../src/utils/native-quota.js');
@@ -64,7 +65,12 @@ after(async () => {
       for (const file of fs.readdirSync(records).filter(file => file.endsWith('.task.json'))) {
         const id = file.slice(0, -10), record = readTask(id); if (!record) continue;
         if (record.result.status === 'RUNNING') await tracker.cancel(id);
-        if (record.workerPid) await waitFor(async () => !await isProcessAlive(record.workerPid!));
+        if (record.workerPid) {
+          try { await waitFor(() => identityState(record.workerPid!, record.workerCreatedAt, undefined, true) === 'EXITED'); }
+          catch (error) { throw new Error(`${String(error)}; worker cleanup diagnostic: ${JSON.stringify({ taskId: id,
+            status: record.result.status, workerPid: record.workerPid, expectedCreatedAt: record.workerCreatedAt,
+            observedCreatedAt: captureCreatedAt(record.workerPid) })}`, { cause: error }); }
+        }
       }
     }
   } finally { if (previous === undefined) delete process.env.ANTIGRAVITY_MCP_STATE_HOME; else process.env.ANTIGRAVITY_MCP_STATE_HOME = previous; }
@@ -284,6 +290,20 @@ test('startup errors with no CLI session are upstream failures; successful permi
   const completed = await run(fixture('permission-notice'), { stderr: notice, response: 'only a partial investigation was possible' });
   assert.equal(completed.status, 'SUCCESS'); assert.equal(completed.cliError, null); assert.match(completed.stderrTail, /permission denied/);
   assert(!('verification' in completed));
+});
+test('background tasks terminated on exit turn a zero-exit success into a partial failure only when both lines appear', async () => {
+  const idle = 'root agent idle; waiting up to 5s for 2 background task(s)', terminating = 'Terminating 2 background task(s) on exit';
+  const aborted = await run(fixture('background-aborted'), { stderr: idle + '\n' + terminating, response: '正在运行测试…' });
+  assert.equal(aborted.status, 'ERROR'); assert.equal(aborted.errorCode, 'CLI_BACKGROUND_ABORTED'); assert.equal(aborted.failureStage, 'CLI');
+  assert.equal(aborted.response, '正在运行测试…'); assert.equal(aborted.processExitCode, 0); assert.equal(aborted.cliStatus, 'SUCCESS');
+  assert.match(aborted.errorMessage!, /部分结果/); assert.match(aborted.nextAction!, /前台/); assert.match(aborted.nextAction!, /不自动重跑/);
+  const idleOnly = await run(fixture('background-idle-only'), { stderr: idle, response: '完整答案' });
+  assert.equal(idleOnly.status, 'SUCCESS'); assert.equal(idleOnly.errorCode, null); assert.equal(idleOnly.response, '完整答案');
+  const unrelated = await run(fixture('background-unrelated'), { stderr: 'loading workspace\nterminating session', response: '完整答案' });
+  assert.equal(unrelated.status, 'SUCCESS'); assert.equal(unrelated.errorCode, null);
+  const { detectBackgroundAbort } = await import('../src/agy-executor.js');
+  assert.equal(detectBackgroundAbort(terminating), false);
+  assert.equal(detectBackgroundAbort(idle.toUpperCase() + '\r\n' + terminating), true);
 });
 test('analysis uses the original directory without copying; its no-write instruction is not enforcement', async () => {
   const workspace = fixture('direct-review'); write(workspace, 'a.txt', 'source'); write(workspace, 'node_modules/local.txt', 'dependency');
@@ -639,7 +659,11 @@ test('field, escaped command-line and NUL limits reject before startup', async (
   const workspace = fixture('input-limits'), count = startCount();
   assert.equal((await run(workspace, {}, { prompt: 'x'.repeat(24001) })).errorCode, 'INVALID_ARGUMENT');
   assert.equal((await run(workspace, {}, { context: '中'.repeat(20001) })).errorCode, 'INVALID_ARGUMENT');
-  assert.equal((await run(workspace, {}, { prompt: 'x'.repeat(24000), context: '中'.repeat(20000) })).errorCode, 'INPUT_TOO_LARGE');
+  const largeInput = { prompt: 'x'.repeat(24000), context: '中'.repeat(20000) };
+  // Windows 的整体命令行上限不适用于 POSIX；通过平台注入保留两种契约的断言。
+  assert.throws(() => validateCommandLine(process.execPath, [cli, largeInput.prompt, largeInput.context], 'win32'), /INPUT_TOO_LARGE/);
+  assert.doesNotThrow(() => validateCommandLine(process.execPath, [cli, largeInput.prompt, largeInput.context], 'linux'));
+  if (process.platform === 'win32') assert.equal((await run(workspace, {}, largeInput)).errorCode, 'INPUT_TOO_LARGE');
   assert.equal((await run(workspace, {}, { prompt: 'nul\0value' })).errorCode, 'INVALID_ARGUMENT');
   assert.equal((await run(workspace, {}, { verificationCommands: ['node\0bad'] } as unknown as Partial<Options>)).errorCode, 'INVALID_ARGUMENT'); assert.equal(startCount(), count);
   assert.doesNotThrow(() => validateCommandLine('x', ['a'.repeat(29998)], 'win32'));
@@ -776,7 +800,9 @@ test('config stays read-only and rejects removed migration/cache fields', () => 
   fs.writeFileSync(config, JSON.stringify({ ...JSON.parse(bytes), volatilePaths: ['cache.db'] })); assert.throws(() => new ConfigManager(config), /INVALID_CONFIG/);
   fs.writeFileSync(config, JSON.stringify({ ...JSON.parse(bytes), defaultRequestWaitMinutes: 30 })); assert.throws(() => new ConfigManager(config), /INVALID_CONFIG/);
 });
-test('worker crash stops its process job and preserves session, files and the last elapsed time', async () => {
+test('worker crash stops its process job and preserves session, files and the last elapsed time', {
+  skip: process.platform !== 'win32' ? '依赖 Windows Job Object 及 worker 退出监视；POSIX 没有 worker 崩溃后的自动后代清理' : false
+}, async () => {
   const workspace = fixture('worker-crash'), started = await run(workspace, { hang: true, descendants: true, grandchild: true, writes: { 'a.txt': 'partial' } }, { asyncMode: true });
   await waitFor(() => fs.existsSync(path.join(workspace, 'grandchild.pid')) && !!taskTracker.get(started.taskId!)?.result.conversationId);
   const descendants = ['descendant.pid', 'grandchild.pid'].map(name => Number(fs.readFileSync(path.join(workspace, name), 'utf8')));
@@ -895,6 +921,7 @@ test('production stdio uses a fake executable for code, direct ask, continuation
     'using System; using System.IO; using System.Text; using System.Diagnostics; using System.Threading;',
     'public class Program { public static void Main(string[] args) {',
     'Console.OutputEncoding=new UTF8Encoding(false); int p=Array.IndexOf(args,"-p"); string prompt=p<0?"":args[p+1];',
+    'if(Array.IndexOf(args,"--version")>=0){Console.WriteLine("agy 1.3.0");return;}',
     'if(prompt=="/usage"){Console.WriteLine("{\\"event\\":\\"result\\",\\"result\\":{\\"status\\":\\"SUCCESS\\",\\"response\\":\\"quota\\",\\"conversation_id\\":\\"\\",\\"command\\":{\\"name\\":\\"usage\\",\\"data\\":{\\"groups\\":[{\\"name\\":\\"Gemini Models\\",\\"buckets\\":[{\\"id\\":\\"gemini-weekly\\",\\"name\\":\\"Weekly\\",\\"window\\":\\"weekly\\",\\"remaining_fraction\\":0.9,\\"reset_time\\":\\"2050-10-13T14:27:34Z\\"}]}]}}}} ");return;}',
     'File.WriteAllLines("invocation.args",args);',
     'int c=Array.IndexOf(args,"--conversation"); string id=c<0?Guid.NewGuid().ToString():args[c+1];',
@@ -925,6 +952,33 @@ test('production stdio uses a fake executable for code, direct ask, continuation
     assert.deepEqual(JSON.parse(value.content[0].text), value.structuredContent);
     return (value.structuredContent.kind === 'task' ? value.structuredContent.data : value.structuredContent) as import('../src/utils/register-tool.js').TaskResult;
   };
+  const cancellationDiagnostic = (result: ReturnType<typeof data>) => {
+    if (result.status === 'CANCELLED') return JSON.stringify(result);
+    let record: Record<string, unknown> | undefined, processes: string | undefined;
+    try {
+      record = JSON.parse(fs.readFileSync(path.join(clientHome, '.gemini', 'antigravity-mcp-jobs-v1', result.taskId! + '.task.json'), 'utf8'));
+      delete record!.token;
+      const ids = [record!.workerPid, ...record!.childPids as number[]].filter(value => Number.isSafeInteger(value) && Number(value) > 0);
+      const script = String.raw`$ErrorActionPreference='Stop';[Console]::OutputEncoding=[Text.UTF8Encoding]::new($false)
+Import-Module ($PSHOME + '\Modules\Microsoft.PowerShell.Utility\Microsoft.PowerShell.Utility.psd1')
+Import-Module ($PSHOME + '\Modules\CimCmdlets\CimCmdlets.psd1')
+$rows = @(foreach ($candidate in ($env:AGY_TEST_PROCESS_IDS -split ',')) {
+  try {
+    $process = [Diagnostics.Process]::GetProcessById([int]$candidate)
+    try {
+      $native = $process.StartTime.ToUniversalTime()
+      $cim = Get-CimInstance Win32_Process -Filter ('ProcessId=' + $candidate)
+      @{ pid=[int]$candidate; nativeCreatedAt=$native.ToFileTimeUtc().ToString(); nativeUtc=$native.ToString('yyyy-MM-ddTHH:mm:ss.ffffffZ'); cimUtc=$(if ($cim) { $cim.CreationDate.ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ss.ffffffZ') } else { $null }) }
+    } finally { $process.Dispose() }
+  } catch { @{ pid=[int]$candidate; error=$_.Exception.Message } }
+})
+[Console]::Out.Write((ConvertTo-Json -InputObject $rows -Compress -Depth 5))`;
+      processes = execFileSync(path.join(process.env.SystemRoot ?? 'C:\\Windows', 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe'),
+        ['-NoProfile', '-NonInteractive', '-Command', script], { windowsHide: true, encoding: 'utf8', timeout: 10000, maxBuffer: 8192,
+          env: { ...process.env, AGY_TEST_PROCESS_IDS: ids.join(',') } }).trim();
+    } catch (error) { processes = String(error); }
+    return JSON.stringify({ result, record, processes });
+  };
   const connection = await connect(), progress: { progress: number; total?: number }[] = [];
   let savedCode: ReturnType<typeof data> | undefined;
   try {
@@ -937,7 +991,7 @@ test('production stdio uses a fake executable for code, direct ask, continuation
     const quotaOutput = await connection.client.callTool({ name: 'antigravity_status', arguments: {} });
     assert.deepEqual(JSON.parse((quotaOutput.content as { text: string }[])[0].text), quotaOutput.structuredContent);
     const quota = quotaOutput.structuredContent as { schemaVersion: number; kind: string; data: import('../src/utils/register-tool.js').QuotaResult };
-    assert.equal(quota.schemaVersion, 3); assert.equal(quota.kind, 'quota'); assert.equal(quota.data.status, 'SUCCESS');
+    assert.equal(quota.schemaVersion, 3); assert.equal(quota.kind, 'quota'); assert.equal(quota.data.status, 'SUCCESS', JSON.stringify(quota));
     assert.equal(quota.data.groups[0].buckets[0].remaining_fraction, 0.9); assert(!('taskId' in quota.data));
     savedCode = code;
     assert.deepEqual(fs.readdirSync(workspace).sort(), ['a.txt', 'invocation.args']);
@@ -949,13 +1003,13 @@ test('production stdio uses a fake executable for code, direct ask, continuation
     connection.client.setNotificationHandler(ProgressNotificationSchema, notification => { withoutToken.push(notification); });
     const ask = data(await connection.client.callTool({ name: 'antigravity_ask', arguments: { prompt: 'READ', workspace_dir: workspace } }));
     assert.equal(withoutToken.length, 0);
-    assert.equal(ask.status, 'SUCCESS'); assert.equal(ask.executionWorkspaceDir, workspace);
+    assert.equal(ask.status, 'SUCCESS', JSON.stringify(ask)); assert.equal(ask.executionWorkspaceDir, workspace);
     const askArgs = fs.readFileSync(path.join(ask.executionWorkspaceDir!, 'invocation.args'), 'utf8').split(/\r?\n/);
     assert.equal(askArgs[askArgs.indexOf('--mode') + 1], 'accept-edits'); assert(askArgs.some(value => value.includes('Analyze only; do not modify files')));
     assert(askArgs.includes('--dangerously-skip-permissions')); assert.equal(ask.autoApprove, true);
     const plan = data(await connection.client.callTool({ name: 'antigravity_ask', arguments: {
       prompt: 'PLAN', workspace_dir: workspace, cli_mode: 'plan', auto_approve: false, effort: 'max' } }));
-    assert.equal(plan.status, 'SUCCESS'); assert.equal(plan.cliMode, 'plan'); assert.equal(plan.effort, 'max');
+    assert.equal(plan.status, 'SUCCESS', JSON.stringify(plan)); assert.equal(plan.cliMode, 'plan'); assert.equal(plan.effort, 'max');
     const planArgs = fs.readFileSync(path.join(plan.executionWorkspaceDir!, 'invocation.args'), 'utf8').split(/\r?\n/);
     assert.equal(planArgs[planArgs.indexOf('--mode') + 1], 'plan'); assert(!planArgs.includes('--dangerously-skip-permissions')); assert(!planArgs.includes('--disable-slash-commands')); assert.equal(plan.autoApprove, false);
     const follow = data(await connection.client.callTool({ name: 'antigravity_ask', arguments: {
@@ -963,7 +1017,7 @@ test('production stdio uses a fake executable for code, direct ask, continuation
     let resumed = follow;
     await waitFor(async () => { resumed = data(await connection.client.callTool({ name: 'antigravity_status',
       arguments: { task_id: follow.taskId, after_revision: resumed.revision, wait_ms: 1000 } })); return resumed.status !== 'RUNNING'; });
-    assert.equal(resumed.status, 'SUCCESS'); assert.equal(resumed.conversationId, code.conversationId);
+    assert.equal(resumed.status, 'SUCCESS', JSON.stringify(resumed)); assert.equal(resumed.conversationId, code.conversationId);
     assert.equal(resumed.autoApprove, true);
     assert(fs.readFileSync(path.join(workspace, 'invocation.args'), 'utf8').split(/\r?\n/).includes('--dangerously-skip-permissions'));
     const hanging = fixture('native-cancel'), active = data(await connection.client.callTool({ name: 'antigravity_code',
@@ -971,7 +1025,7 @@ test('production stdio uses a fake executable for code, direct ask, continuation
     await waitFor(() => fs.existsSync(path.join(hanging, 'child.pid')));
     const childPid = Number(fs.readFileSync(path.join(hanging, 'child.pid'), 'utf8'));
     const cancelled = data(await connection.client.callTool({ name: 'antigravity_cancel_task', arguments: { task_id: active.taskId } }));
-    assert.equal(cancelled.status, 'CANCELLED'); assert.equal(await isProcessAlive(childPid), false);
+    assert.equal(cancelled.status, 'CANCELLED', cancellationDiagnostic(cancelled)); assert.equal(await isProcessAlive(childPid), false);
     assert.equal(fs.readFileSync(path.join(hanging, 'a.txt'), 'utf8'), 'generated');
     const unchanged = data(await connection.client.callTool({ name: 'antigravity_cancel_task', arguments: { task_id: code.taskId } })); assert.equal(unchanged.status, 'SUCCESS');
   } finally { await connection.client.close(); }
@@ -995,7 +1049,7 @@ test('production stdio uses a fake executable for code, direct ask, continuation
     assert.equal(conflict.errorCode, 'WORKSPACE_BUSY');
     const waiting = fresh.client.callTool({ name: 'antigravity_status', arguments: { task_id: active.taskId, after_revision: quiet.revision, wait_ms: 5000 } });
     const cancelled = data(await fresh.client.callTool({ name: 'antigravity_cancel_task', arguments: { task_id: active.taskId } }));
-    assert.equal(cancelled.status, 'CANCELLED'); await waitFor(async () => !await isProcessAlive(childPid));
+    assert.equal(cancelled.status, 'CANCELLED', cancellationDiagnostic(cancelled)); await waitFor(async () => !await isProcessAlive(childPid));
     assert(data(await waiting).revision > quiet.revision);
     const stored = data(await fresh.client.callTool({ name: 'antigravity_status', arguments: { task_id: savedCode!.taskId } }));
     assert.equal(stored.status, 'SUCCESS'); assert.equal(stored.response, savedCode!.response);

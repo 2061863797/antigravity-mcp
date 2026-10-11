@@ -1,6 +1,6 @@
 # Antigravity MCP
 
-通过 MCP 调用本机 Antigravity CLI（`agy`），让 Codex 等父 agent 委派分析、编码和复核任务。
+通过 MCP 调用本机 Antigravity CLI（`agy`），让任意支持 MCP 的父 agent 委派分析、编码和复核任务。
 
 MCP 负责启动 agy、交付进度与结果、管理后台任务和停止进程；父 agent 负责检查文件、运行测试与验收成果。项目直接使用 agy，不调用独立的 Gemini API。
 
@@ -26,8 +26,8 @@ MCP 负责启动 agy、交付进度与结果、管理后台任务和停止进程
 ## 环境要求
 
 - **Node.js 20+** 和 npm。
-- 已安装并登录的 **agy CLI**，支持官方 `stream-json` 输出。
-- 支持本地 stdio 的 MCP 客户端，例如 Codex。
+- 已安装并登录的 **agy CLI 1.1.15 或更高版本**，支持官方 `stream-json` 输出。
+- 任意支持本地 stdio 传输的 MCP 客户端。
 - Windows 是主要验证平台；Windows worker 需要 PowerShell 和 CIM/WMI 可用。其他平台未完成同等实机验收。
 
 先确认以下命令可用，并按 [agy 官方文档](https://antigravity.google/docs/cli/headless/)完成安装与登录：
@@ -52,15 +52,23 @@ npm run build
 
 此仓库按源码分发，不需要全局安装 `antigravity-mcp`。构建后由 MCP 客户端启动 `dist/index.js`；不要把 `npm start` 当成常驻 HTTP 服务。
 
-### 2. 配置 Codex
+### 2. 接入 MCP 客户端
 
-假设仓库位于 `C:\Projects\antigravity-mcp`，可以通过 Codex CLI 添加：
+本服务是标准的本地 stdio MCP 服务，不依赖特定客户端或 agent。任何支持 stdio 传输的 MCP 客户端都按同一方式接入：启动命令为 `node`，参数为构建产物 `dist/index.js` 的绝对路径，可选环境变量见下一节。多数客户端使用如下 JSON 结构（配置文件位置和外层键名以各客户端文档为准），也可参考 [JSON 配置示例](chatgpt_desktop_config.example.json)：
 
-```powershell
-codex mcp add antigravity -- node "C:\Projects\antigravity-mcp\dist\index.js"
+```json
+{
+  "mcpServers": {
+    "antigravity": {
+      "command": "node",
+      "args": ["C:/Projects/antigravity-mcp/dist/index.js"],
+      "env": {}
+    }
+  }
+}
 ```
 
-也可以在 Codex 的 `config.toml` 中配置，路径须替换为自己的实际位置：
+使用 TOML 的客户端写法类似，例如 Codex 的 `config.toml`：
 
 ```toml
 [mcp_servers.antigravity]
@@ -68,9 +76,13 @@ command = "node"
 args = ["C:/Projects/antigravity-mcp/dist/index.js"]
 ```
 
-不要同时重复添加同一个服务。配置后重新连接 MCP，确认四个工具可见。客户端命令和配置格式参见 [Codex MCP 官方说明](https://developers.openai.com/codex/mcp/)。
+提供命令行添加方式的客户端，同样把 `node` 和脚本路径作为服务命令传入。路径须替换为自己的实际位置；不要重复添加同一个服务。配置后重新连接 MCP，确认四个工具可见，可先运行 `--doctor`（见下文）确认 agy、配置和状态目录。
 
-其他支持 stdio 的客户端可参考 [JSON 配置示例](chatgpt_desktop_config.example.json)。
+与客户端无关的运行约定：
+
+- **进度通知**：同步调用的请求带有 `progressToken` 时，服务按阶段发送标准 `notifications/progress`，并在等待期间每 60 秒重复发送当前阶段（消息含 taskId 和已耗时），供有空闲超时的客户端判断调用仍在进行；异步提交不发送。客户端是否展示进度、是否据此延长等待由客户端决定。
+- **请求超时**：客户端对单次工具请求的等待期限独立于任务执行期限。预计超过客户端等待能力时用 `async_mode` 先取得 taskId；请求被客户端中止不等于任务停止，可用进度消息或结果中的 taskId 查询或取消。
+- **结果大小**：完整结果包含全部最终响应；轮询时用 `view: "summary"` 保持结果短小，需要时再读取完整结果。
 
 ### 3. 指定 agy 路径（可选）
 
@@ -82,6 +94,27 @@ AGY_PATH = "C:/Tools/agy/agy.exe"
 ```
 
 `AGY_PATH` 必须指向实际可执行文件；路径错误会直接失败，不换用其他后端。
+
+提交任务前会用同一可执行文件和参数前缀调用 `--version`，10 秒超时，Windows 隐藏窗口；预检通过后才获取工作区租约。无任务 ID 的原生额度查询也使用此检查。版本过低返回 `AGY_VERSION_UNSUPPORTED`，信息包含当前版本和最低版本；执行失败、输出不可解析或出现多个不同版本时返回 `AGY_VERSION_UNREADABLE`。成功结果按可执行文件路径和修改时间缓存；有包装脚本时也区分参数前缀与脚本修改时间，失败结果不缓存。
+
+最低版本 `1.1.15` 根据 [agy 官方 changelog](https://www.antigravity.google/docs/changelog?tab=cli)核实：它修复非 ASCII 的 stream-json 文本，此前版本已经加入 `--effort`、stream-json、禁用斜杠命令和原生额度输出，并修复无头运行忽略 `--mode`。这是文档核查；真实 CLI 的兼容性仍须人工验证。必要时由用户明确设置 `ANTIGRAVITY_SKIP_VERSION_CHECK=1` 跳过预检；默认执行检查，不自动重试、换模型或切换后端。
+
+### 4. 预检（可选）
+
+```powershell
+node "C:\Projects\antigravity-mcp\dist\index.js" --doctor
+```
+
+`--doctor` 只是命令行参数，不注册新的 MCP 工具。它输出 JSON 并在任一检查失败时以退出码 1 结束，检查项为：
+
+| 检查 | 内容 |
+| --- | --- |
+| `agy` | 可执行文件路径及 `--version` 是否满足最低版本（与任务提交使用同一预检） |
+| `config` | `ANTIGRAVITY_CONFIG_PATH` 或默认 `config.json` 能否读取和校验，打印 `defaultModel`、`defaultEffort`；不调用模型验证默认模型是否可用 |
+| `stateDir` | 用户状态目录能否创建、写入和删除探测文件 |
+| `powershell` | 仅 Windows：`$ExecutionContext.SessionState.LanguageMode` 是否为 `FullLanguage`；`ConstrainedLanguage` 会让 `Add-Type` 编译的 Job 启动器失败 |
+
+预检会运行一次 `agy --version`，不启动模型、不创建任务或会话。需要与 MCP 客户端相同的环境时，带上客户端配置中的 `AGY_PATH`、`ANTIGRAVITY_CONFIG_PATH` 等变量运行。
 
 ## 使用示例
 
@@ -99,7 +132,7 @@ AGY_PATH = "C:/Tools/agy/agy.exe"
 }
 ```
 
-`ask` 默认通过任务指令要求只分析、不写文件，**不是系统级只读保护**。`ask` 和 `code` 均默认使用 `accept-edits`；只有明确需要规划时才传 `cli_mode: "plan"`。规划模式不是通用只读开关。
+`ask` 默认通过任务指令要求只分析、不写文件，**不是系统级只读保护**。工作目录是 git 仓库时，`ask` 在 agy 运行前后各读取一次 `HEAD` 和 `git status --porcelain=v1 -z`，结果附带 `workspaceChanged`；有变化时另附最多 20 个路径的 `workspaceChangeSummary`。这只表示**运行期间工作区发生变化**，不断言是 agent 修改的（用户或编辑器可能同时在改），也不拦截或回滚。已有改动的文件再次被修改而状态码不变时无法识别。非 git 目录或 git 命令失败时两个字段都省略，不影响任务结果。`ask` 和 `code` 均默认使用 `accept-edits`；只有明确需要规划时才传 `cli_mode: "plan"`。规划模式不是通用只读开关。
 
 ### 后台编码
 
@@ -145,6 +178,12 @@ AGY_PATH = "C:/Tools/agy/agy.exe"
 
 取消、执行超时和失败均保留文件改动。确认进程树停止后才释放目录；未确认时保留占用并明确报告，可重试取消。重复取消已完成任务不改变结果。
 
+POSIX 上取消、超时和收尾清理先向进程树发送 SIGTERM，给 agy 最多 5 秒正常收尾，仍存活的再 SIGKILL，并沿用原有的终止校验；整体停止期限相应延长 5 秒。Windows 仍由 Job Object 直接终止，行为不变。
+
+POSIX 上对已逃逸后代的清理仅 Linux 支持：任务环境中的随机标记随子进程继承，清理时通过 `/proc` 查找脱离原父子关系的后代。macOS 等没有 Linux `/proc` 的平台只枚举当前父子关系；Windows 沿用 Job Object 和进程身份校验。
+
+worker 意外崩溃后的自动后代清理目前仅 Windows 支持。POSIX 没有对应的 worker 退出监视，不能保证崩溃时停止已分离的后代；只要仍有存活进程，任务会保留目录占用并报告停止未确认。
+
 续接时传回 `conversationId`，仍使用原实际工作目录：
 
 ```json
@@ -175,13 +214,15 @@ AGY_PATH = "C:/Tools/agy/agy.exe"
 
 `ask` / `code` 必须提供 `prompt` 和已存在目录的绝对路径 `workspace_dir`。
 
+工作目录安全检查按 `realpath` 后的实际路径判断，链接不能绕过：所有平台拒绝驱动器根目录和当前用户家目录本身（家目录的子目录允许）；Windows 拒绝系统目录和 Program Files；POSIX 拒绝 `/etc`、`/usr`、`/bin`、`/sbin`、`/lib`、`/var`、`/System`、`/Library`、`/private` 本身及其子目录，但系统临时目录（如 macOS 位于 `/private/var/folders` 下的 `TMPDIR`）的子目录除外。
+
 | 参数 | 默认值 / 限制 | 说明 |
 | --- | --- | --- |
 | `context` | 可选，最多 20,000 字符 | 必要上下文、修改范围和验收要求 |
 | `model` | 配置默认值 | 用户指定优先，不自动切换 |
 | `effort` | 配置默认值 | 接受 low、medium、high、xhigh、max；CLI 不支持时失败 |
 | `cli_mode` | `accept-edits` | 明确规划时选择 `plan` |
-| `auto_approve` | `true` | 原生自动审批；false 遵循本机 agy 权限配置 |
+| `auto_approve` | `true`（可由配置改变） | 原生自动审批；false 遵循本机 agy 权限配置 |
 | `async_mode` | `false` | true 返回任务 ID，之后查询 |
 | `timeout_minutes` | 不设置 | 只限制同步等待；到期后台任务继续 |
 | `execution_timeout_minutes` | 不设置 | 限制准备和 agy 执行；到期停止任务 |
@@ -199,9 +240,11 @@ AGY_PATH = "C:/Tools/agy/agy.exe"
 }
 ```
 
+可选字段 `defaultAutoApprove`（布尔）设定调用方**省略** `auto_approve` 时的审批方式，未配置时为 `true`，与此前行为一致。优先级：本次显式传入的 `auto_approve` → 配置 `defaultAutoApprove` → `true`。工具 schema 中公布的默认值仍为 `true`；设为 `false` 后，省略该参数的任务遵循本机 agy 权限配置和白名单。
+
 默认模型须在你的 agy 账号中可用；不可用时由用户显式指定可用模型，不自动替换。续接的模型与强度按“本次显式值 → 会话保存值 → 服务默认值”选择。可通过绝对路径 `ANTIGRAVITY_CONFIG_PATH` 使用自定义配置；启动时只读，不改写。
 
-客户端另有工具请求超时。Codex 可通过 `tool_timeout_sec` 调整单次请求等待；它不是 MCP 任务执行期限。预计超过客户端单次等待能力时，先异步取得 taskId。客户端超时不证明任务未执行，不要重复提交。[Codex 配置说明](https://developers.openai.com/codex/config-reference/)
+客户端另有工具请求超时（例如 Codex 的 `tool_timeout_sec`），它只限制单次请求等待，不是 MCP 任务执行期限。预计超过客户端单次等待能力时，先异步取得 taskId。客户端超时不证明任务未执行，不要重复提交。[Codex 配置说明](https://developers.openai.com/codex/config-reference/)
 
 ## 结果、权限与运行边界
 
@@ -210,6 +253,7 @@ AGY_PATH = "C:/Tools/agy/agy.exe"
 - 直接在真实工作目录执行。同目录及父子目录互斥；不同目录可并行。此租约不阻止用户、编辑器或其他软件修改文件。
 - **默认自动审批会批准命令和文件写入。** MCP 使用原生 `--dangerously-skip-permissions` 并传入 `--sandbox`；需要本机权限和白名单时传 `auto_approve: false`。审批不能解决 OS 权限、文件占用或沙箱限制。[agy headless 权限](https://antigravity.google/docs/cli/headless/#permissions-in-headless-mode)
 - 执行层只解析官方 stream-json / NDJSON。无合法最终结果、损坏 JSON、上游错误或非零退出不能仅因模型说“完成”而成功。未知事件忽略，不触发重跑。
+- agy 无头运行进入空闲时若仍有后台 shell 任务，会在退出时终止它们，退出码和最终状态仍为成功。stderr 中同时出现“空闲并等待后台任务”与“退出时终止后台任务”两类行时，结果改为 `CLI_BACKGROUND_ABORTED`，保留已产生的 `response` 作为部分结果；只出现其中一类时不判定。判定措辞来自 agy 1.2.x 的公开实测，须在真实 agy 上人工确认。
 - `recentTools` 最多五次操作；工具 DONE 只表示结束。`latestText` 是当前响应步骤最后 4,000 字符，完整最终报告在 `response`。
 - `stderrTail` 保留真正末尾最多 8,192 字符。原始 stdout 默认不落盘；调试日志达到上限会标记截断，解析继续消费完整输入。
 - `usage` 保留上游原始值，统计范围为 session 或 unknown；不计算费用或将续接的累计用量相加。本地耗时和上游时长分别返回。
@@ -239,7 +283,41 @@ npm run check
 
 `check` 依次构建、检查测试类型并运行回归。普通测试使用假 CLI，不调用真实模型。覆盖任务、额度、会话、取消、超时、目录互斥、进程身份、中文分片、长输出及本地包装；真实事件样本中的个人路径和会话标识已匿名化。
 
+`npm test` 显式列出 `test/` 下的 `.test.ts` 文件，保留串行执行和 `tsx` 加载参数，兼容 Windows Node 20 不展开 `test/*.test.ts` 的情况。测试发现不依赖 shell 通配符展开。
+
+[CI 工作流](.github/workflows/ci.yml) 当前仅在 `windows-latest` 上使用 Node 20 和 22，形成两组基线；Ubuntu CI 暂缓。推送到 `main` 或 `optimize/p0`、提交 pull request 或手动触发时执行 `npm ci` 和 `npm run check`，每组限时 30 分钟。某组失败不会取消其他组合；命令失败仍保留失败退出码，不把已知基线失败隐藏为成功。普通 CI 固定 `ANTIGRAVITY_LIVE_TESTS=0`，不调用真实 agy 或模型。
+
+本阶段先以 Windows 两组复验通过作为继续 P0 的条件。Ubuntu CI 恢复后再补充 Linux 验证；Windows 结果不能作为 Linux `/proc` 扫描及信号清理的验收依据。
+
+每组运行都会尝试上传 artifact `baseline-${os}-node-${node}-attempt-${run_attempt}`，保留 30 天，包含：
+
+- `ci-environment.log`：实际检出的提交哈希、Node/npm 版本和平台信息。
+- `npm-ci.log`：依赖安装输出。
+- `node-test-output.log`：`check` 的完整输出，包括构建、测试类型检查及 `node --test` 的用例结果和统计。
+
+安装、构建或类型检查失败可能导致测试未运行；此时测试数量记为“未取得”，缺失日志会给出警告。基线采集可能包含尚未修复的失败，应按提交哈希、平台与 Node 版本记录通过、失败、跳过数量及失败用例名，再与后续任务对比。验证报告分别列出 Windows 本机实测、CI 实测和未验证项；本机构建或类型检查通过不能代替 Linux 运行结果。
+
+`scripts/live-print-timeout.mjs` 是 `--print-timeout` 取值的实验脚本：让 agent 启动约 90 秒的后台命令，分别以 `0` 和正数期限（默认 `60s`）直接运行 agy，记录退出码、最终状态、耗时、后台任务是否被终止及 stderr 尾部，报告写入 `audit/`。它调用真实模型，同样只在授权后设置 `ANTIGRAVITY_LIVE_TESTS=1` 手动运行；拿到实测结果前执行器继续固定传 `--print-timeout 0`。
+
 Windows 测试需要正常的路径解析、原子文件更新、CIM 和子进程终止权限。真实 agy 验收脚本为 `scripts/live-cli-compat.mjs`，只有单独授权并设置 `ANTIGRAVITY_LIVE_TESTS=1` 后才能运行；程序化 stdio 测试不能替代真实客户端或真实模型验收。
+
+Windows worker 启动失败时，错误诊断保留系统的 `code`、`signal`、`killed`，以及 `AGY_MCP_WORKER_STAGE` 标记，用于区分 PowerShell 初始化、CIM 创建和进程身份读取等阶段。启动期限仍为 10 秒，失败不会自动重试；成功结果不增加诊断字段。
+
+Windows worker 的环境准备使用进程级 .NET API，所需 Utility 和 CIM 模块从 Windows PowerShell 自带目录显式加载，避免依赖用户或全局模块的自动发现。内部传递的命令和目录变量在创建 worker 前清除，其他环境变量继续继承；创建标志、PID 与创建时间校验及 10 秒创建等待期限保持不变。
+
+Windows PowerShell 的 Job 启动器编译时，若临时路径包含系统 ANSI 代码页无法表示的字符，仅在编译期间使用当前用户的 `LocalApplicationData/Temp`。编译结束后恢复原有 `TEMP`、`TMP`，CLI 的工作目录和环境继续保留中文、空格及 emoji。若该编译目录也无法表示或无法写入，启动明确失败；可将 `TEMP`、`TMP` 配置为当前代码页可表示的可写路径。
+
+CI 使用 `ANTIGRAVITY_TEST_DIAGNOSTICS=1` 记录插件包装验收的调用阶段与返回状态。stdio 取消断言失败时附带保存的任务状态和原生/CIM 进程身份快照，便于定位停止未确认；这些诊断来自假 CLI 测试，不调用真实 agy。
+
+Windows 停止未确认时，现有 `stderrTail` 保留 `AGY_MCP_STOP_DIAGNOSTIC`，区分身份读取、CIM 枚举和终止阶段。诊断保留原有创建标识、停止校验与期限，不能将未确认状态视为已经停止。
+
+Windows Job 启动器与停止辅助脚本通过 `$PSHOME` 的明确路径加载自带模块，启动器使用 .NET API 清除私有环境变量，避免启动和取消依赖用户或全局模块的自动发现。
+
+原生额度查询没有 `stderrTail` 字段；其停止未确认的诊断附在现有 `errorMessage` 中。CI 包装调用失败时也打印现有 `stderrTail`，以保留停止阶段信息。
+
+测试收尾使用 PID 和保存的创建标识确认原 worker 退出；PID 被复用时，新的无关实例保持原状。同一实例存活或身份未知时仍等待，超时日志保留任务 ID、PID、预期和实际创建标识，15 秒期限不变。
+
+命令行整体长度上限的回归分别注入 Windows 和 Linux 平台，字段与 NUL 限制仍在所有平台断言。worker 崩溃后关闭 Job 的用例只在 Windows 执行，其他平台注明机制不适用的原因后跳过，保留 Windows 上的完整断言。
 
 协作 Skill 位于 [plugin/skills/antigravity-delegation/SKILL.md](plugin/skills/antigravity-delegation/SKILL.md)，只有用户明确授权后调用 MCP。普通委派不另存提示词、提交记录、进度历史或重复最终结果；明确要求报告或证据时仅保存必要材料。
 

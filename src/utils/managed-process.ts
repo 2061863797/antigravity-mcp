@@ -2,7 +2,7 @@ import { spawn, execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import path from 'node:path';
 import fs from 'node:fs';
-import { killProcessTree } from './process-killer.js';
+import { killProcessTree, POSIX_TERM_GRACE_MS } from './process-killer.js';
 import { stateHome } from './task-store.js';
 
 import crypto from 'node:crypto';
@@ -18,32 +18,53 @@ export async function startWindowsWorker(executable: string, args: string[], cwd
   const script = String.raw`
 $ErrorActionPreference = 'Stop'
 [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)
-$command = $env:AGY_MCP_WORKER_COMMAND
-$directory = $env:AGY_MCP_WORKER_CWD
-Remove-Item Env:AGY_MCP_WORKER_COMMAND, Env:AGY_MCP_WORKER_CWD
+[Console]::Error.WriteLine('AGY_MCP_WORKER_STAGE=ENVIRONMENT')
+$command = [Environment]::GetEnvironmentVariable('AGY_MCP_WORKER_COMMAND', [EnvironmentVariableTarget]::Process)
+$directory = [Environment]::GetEnvironmentVariable('AGY_MCP_WORKER_CWD', [EnvironmentVariableTarget]::Process)
+[Console]::Error.WriteLine('AGY_MCP_WORKER_STAGE=ENVIRONMENT_CLEAR')
+[Environment]::SetEnvironmentVariable('AGY_MCP_WORKER_COMMAND', $null, [EnvironmentVariableTarget]::Process)
+[Environment]::SetEnvironmentVariable('AGY_MCP_WORKER_CWD', $null, [EnvironmentVariableTarget]::Process)
+[Console]::Error.WriteLine('AGY_MCP_WORKER_STAGE=ENVIRONMENT_ENUMERATE')
 $variables = [Environment]::GetEnvironmentVariables()
-$block = [string[]]@($variables.Keys | ForEach-Object { $_ + '=' + $variables[$_] })
+$block = [string[]]@(foreach ($key in $variables.Keys) { $key + '=' + $variables[$key] })
+[Console]::Error.WriteLine('AGY_MCP_WORKER_STAGE=CIM_MODULE')
+# 使用 Windows PowerShell 自带模块的明确路径，避免启动过程递归发现用户或全局模块。
+Import-Module -Name ($PSHOME + '\Modules\Microsoft.PowerShell.Utility\Microsoft.PowerShell.Utility.psd1') -ErrorAction Stop
+Import-Module -Name ($PSHOME + '\Modules\CimCmdlets\CimCmdlets.psd1') -ErrorAction Stop
+[Console]::Error.WriteLine('AGY_MCP_WORKER_STAGE=CIM_STARTUP_INFO')
 $startup = New-CimInstance -Namespace root/cimv2 -ClassName Win32_ProcessStartup -ClientOnly -Property @{
     ShowWindow = [uint16]0
     CreateFlags = [uint32]0x01000608
     EnvironmentVariables = $block
 }
+[Console]::Error.WriteLine('AGY_MCP_WORKER_STAGE=CIM_CREATE')
 $created = Invoke-CimMethod -Namespace root/cimv2 -ClassName Win32_Process -MethodName Create -Arguments @{
     CommandLine = $command
     CurrentDirectory = $directory
     ProcessStartupInformation = $startup
 }
+[Console]::Error.WriteLine('AGY_MCP_WORKER_STAGE=CIM_RETURN=' + $created.ReturnValue)
 if ($created.ReturnValue -ne 0) { throw "WORKER_START_FAILED: Windows process creation returned $($created.ReturnValue)" }
+[Console]::Error.WriteLine('AGY_MCP_WORKER_STAGE=PROCESS_IDENTITY')
 $worker = [Diagnostics.Process]::GetProcessById([int]$created.ProcessId)
 try {
     $handle = $worker.Handle
     [Console]::Out.Write((@{ pid = $created.ProcessId; createdAt = $worker.StartTime.ToUniversalTime().ToFileTimeUtc().ToString() } | ConvertTo-Json -Compress))
-} finally { $worker.Dispose() }`;
+} finally { $worker.Dispose() }
+[Console]::Error.WriteLine('AGY_MCP_WORKER_STAGE=COMPLETE')`;
   const powershell = path.join(process.env.SystemRoot ?? 'C:\\Windows', 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe');
-  const { stdout } = await promisify(execFile)(powershell, ['-NoProfile', '-NonInteractive', '-Command', script], {
-    windowsHide: true, timeout: 10000, maxBuffer: 8192,
-    env: { ...env, AGY_MCP_WORKER_COMMAND: formatCommandLine(executable, args), AGY_MCP_WORKER_CWD: cwd }
-  });
+  let stdout: string;
+  try {
+    ({ stdout } = await promisify(execFile)(powershell, ['-NoProfile', '-NonInteractive', '-Command', script], {
+      windowsHide: true, timeout: 10000, maxBuffer: 8192,
+      env: { ...env, AGY_MCP_WORKER_COMMAND: formatCommandLine(executable, args), AGY_MCP_WORKER_CWD: cwd }
+    }));
+  } catch (error) {
+    const failure = error as Error & { code?: number | string | null; signal?: string | null; killed?: boolean; stderr?: string };
+    const diagnostic = JSON.stringify({ code: failure.code ?? null, signal: failure.signal ?? null, killed: failure.killed ?? false });
+    const message = String(error), stderr = typeof failure.stderr === 'string' ? failure.stderr.slice(-8192) : '';
+    throw new Error(`WORKER_START_FAILED: ${message}\nWindows startup diagnostic: ${diagnostic}${stderr && !message.includes(stderr) ? '\n' + stderr : ''}`, { cause: error });
+  }
   const identity = JSON.parse(stdout.trim()) as { pid: number; createdAt: string };
   const pid = identity.pid;
   if (!Number.isSafeInteger(pid) || pid <= 0) throw new Error('WORKER_START_FAILED: Windows did not return a worker PID');
@@ -53,6 +74,22 @@ try {
 }
 
 const LAUNCHER_CONTENT = `$ErrorActionPreference = "Stop"
+Import-Module -Name ($PSHOME + '\\Modules\\Microsoft.PowerShell.Utility\\Microsoft.PowerShell.Utility.psd1') -ErrorAction Stop
+$originalTemp = [Environment]::GetEnvironmentVariable('TEMP', [EnvironmentVariableTarget]::Process)
+$originalTmp = [Environment]::GetEnvironmentVariable('TMP', [EnvironmentVariableTarget]::Process)
+$compilerTemp = [IO.Path]::GetTempPath()
+$encoding = [Text.Encoding]::Default
+# The legacy Windows PowerShell compiler requires an ANSI-compatible temporary path.
+if ($encoding.GetString($encoding.GetBytes($compilerTemp)) -cne $compilerTemp) {
+    $localData = [Environment]::GetFolderPath('LocalApplicationData')
+    if ([string]::IsNullOrEmpty($localData)) { throw 'Windows PowerShell compiler temporary directory is unavailable' }
+    $compilerTemp = [IO.Path]::Combine($localData, 'Temp')
+    if ($encoding.GetString($encoding.GetBytes($compilerTemp)) -cne $compilerTemp) { throw 'Windows PowerShell compiler requires an ANSI-compatible temporary directory; set TEMP and TMP to a writable compatible path' }
+    [void][IO.Directory]::CreateDirectory($compilerTemp)
+}
+try {
+    [Environment]::SetEnvironmentVariable('TEMP', $compilerTemp, [EnvironmentVariableTarget]::Process)
+    [Environment]::SetEnvironmentVariable('TMP', $compilerTemp, [EnvironmentVariableTarget]::Process)
 Add-Type -TypeDefinition @"
 using System;
 using System.Runtime.InteropServices;
@@ -247,15 +284,19 @@ public class SuspendedJobLauncher {
     }
 }
 "@
+} finally {
+    [Environment]::SetEnvironmentVariable('TEMP', $originalTemp, [EnvironmentVariableTarget]::Process)
+    [Environment]::SetEnvironmentVariable('TMP', $originalTmp, [EnvironmentVariableTarget]::Process)
+}
 
-$cmdLine = $env:AGY_MCP_COMMANDLINE
-$cwd = $env:AGY_MCP_CWD
-$ownerPid = [int]$env:AGY_MCP_OWNER_PID
-$ownerCreatedAt = $env:AGY_MCP_OWNER_CREATED_AT
-Remove-Item Env:AGY_MCP_COMMANDLINE
-Remove-Item Env:AGY_MCP_CWD
-Remove-Item Env:AGY_MCP_OWNER_PID
-Remove-Item Env:AGY_MCP_OWNER_CREATED_AT
+$cmdLine = [Environment]::GetEnvironmentVariable('AGY_MCP_COMMANDLINE', [EnvironmentVariableTarget]::Process)
+$cwd = [Environment]::GetEnvironmentVariable('AGY_MCP_CWD', [EnvironmentVariableTarget]::Process)
+$ownerPid = [int][Environment]::GetEnvironmentVariable('AGY_MCP_OWNER_PID', [EnvironmentVariableTarget]::Process)
+$ownerCreatedAt = [Environment]::GetEnvironmentVariable('AGY_MCP_OWNER_CREATED_AT', [EnvironmentVariableTarget]::Process)
+[Environment]::SetEnvironmentVariable('AGY_MCP_COMMANDLINE', $null, [EnvironmentVariableTarget]::Process)
+[Environment]::SetEnvironmentVariable('AGY_MCP_CWD', $null, [EnvironmentVariableTarget]::Process)
+[Environment]::SetEnvironmentVariable('AGY_MCP_OWNER_PID', $null, [EnvironmentVariableTarget]::Process)
+[Environment]::SetEnvironmentVariable('AGY_MCP_OWNER_CREATED_AT', $null, [EnvironmentVariableTarget]::Process)
 $pidOut = 0
 try {
     $code = [SuspendedJobLauncher]::RunInJob($cmdLine, $cwd, $ownerPid, $ownerCreatedAt, [ref]$pidOut)
@@ -293,6 +334,8 @@ export async function runManagedProcess(executable: string, args: string[], opti
       for (const key of pathKeys) delete env[key];
       env.Path = [path.dirname(process.execPath), inheritedPath, path.join(process.env.SystemRoot ?? 'C:\\Windows', 'System32')].filter(Boolean).join(path.delimiter);
     }
+    const jobToken = process.platform === 'win32' ? undefined : crypto.randomUUID();
+    if (jobToken) env.AGY_MCP_JOB_TOKEN = jobToken;
     const workingDir = options.cwd ?? process.cwd();
 
     let child: ReturnType<typeof spawn>;
@@ -341,7 +384,9 @@ export async function runManagedProcess(executable: string, args: string[], opti
     const stop = (reason: string) => {
       error ??= reason;
       if (!stopping) {
-        stopTimer = setTimeout(() => { error = 'PROCESS_TERMINATION_UNCONFIRMED'; finish(null, false); }, 10000);
+        // POSIX 的 SIGTERM 宽限期计入停止期限，避免宽限期未到就判定停止未确认。
+        stopTimer = setTimeout(() => { error = 'PROCESS_TERMINATION_UNCONFIRMED'; finish(null, false); },
+          10000 + (process.platform === 'win32' ? 0 : POSIX_TERM_GRACE_MS));
         stopping = (async () => {
           if (child.pid === undefined) return false;
           if (process.platform === 'win32' && !createdAt) {
@@ -349,7 +394,12 @@ export async function runManagedProcess(executable: string, args: string[], opti
             child.kill('SIGKILL');
             return identityState(child.pid) === 'EXITED';
           }
-          return (await killProcessTree(child.pid, createdAt)).verifiedTerminated;
+          return (await killProcessTree(child.pid, createdAt, jobToken, { onDiagnostic: message => {
+            if (!settled) {
+              stderr = (stderr + '\nAGY_MCP_STOP_DIAGNOSTIC: ' + message).slice(-8192);
+              if (/^[\uDC00-\uDFFF]/.test(stderr)) stderr = stderr.slice(1);
+            }
+          } })).verifiedTerminated;
         })().catch(() => { error = 'PROCESS_TERMINATION_UNCONFIRMED'; return false; });
       }
     };
@@ -385,7 +435,7 @@ export async function runManagedProcess(executable: string, args: string[], opti
       let verified = stopping ? await stopping : error !== 'PROCESS_TERMINATION_UNCONFIRMED';
       // Windows launcher owns a kill-on-close job, including detached descendants.
       if (process.platform !== 'win32') {
-        if (child.pid !== undefined && !(await killProcessTree(child.pid)).verifiedTerminated) verified = false;
+        if (child.pid !== undefined && !(await killProcessTree(child.pid, undefined, jobToken)).verifiedTerminated) verified = false;
       }
 
       if (!verified) error = 'PROCESS_TERMINATION_UNCONFIRMED';

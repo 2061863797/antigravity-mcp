@@ -18,24 +18,27 @@ import { stateHome, taskFile, writeJson, removeTaskInput } from './utils/task-st
 import { isQuotaExhaustion } from './utils/native-quota.js';
 import { knownCreatedAt, identityState } from './utils/process-identity.js';
 import { killProcessTree } from './utils/process-killer.js';
+import { ensureAgyVersion } from './utils/agy-version.js';
+import { snapshotWorkspace, compareWorkspace } from './utils/workspace-change.js';
 
 export interface AgyExecuteOptions {
   prompt: string; context?: string; workspaceDir: string; model?: string; effort?: 'low' | 'medium' | 'high' | 'xhigh' | 'max';
   analysis?: boolean; mode?: 'plan' | 'accept-edits'; autoApprove?: boolean;
   conversationId?: string; asyncMode?: boolean;
   debugLog?: boolean; requestWaitTimeoutMs?: number; executionTimeoutMs?: number;
-  requestSignal?: AbortSignal; onProgress?: (revision: number, message: string) => Promise<void>;
+  requestSignal?: AbortSignal; onProgress?: (revision: number, message: string) => Promise<void>; progressHeartbeatMs?: number;
   cliPath?: string; cliArgsPrefix?: string[];
 }
 const InputSchema = z.object({
   prompt: z.string().trim().min(1).max(24000), context: z.string().max(20000).optional(), workspaceDir: z.string().min(1).max(32767).refine(path.isAbsolute),
   model: z.string().regex(/^[a-zA-Z0-9][a-zA-Z0-9._-]{0,127}$/).optional(), effort: z.enum(['low', 'medium', 'high', 'xhigh', 'max']).optional(),
-  analysis: z.boolean().optional(), autoApprove: z.boolean().default(true),
+  analysis: z.boolean().optional(), autoApprove: z.boolean().optional(),
   mode: z.enum(['plan', 'accept-edits']).optional(), conversationId: z.string().min(1).max(256).optional(), asyncMode: z.boolean().optional(),
   debugLog: z.boolean().optional(),
   requestWaitTimeoutMs: z.number().positive().max(86400000).optional(), executionTimeoutMs: z.number().positive().max(86400000).optional(),
   cliPath: z.string().optional(), cliArgsPrefix: z.array(z.string()).optional(),
-  requestSignal: z.custom<AbortSignal>().optional(), onProgress: z.custom<AgyExecuteOptions['onProgress']>().optional()
+  requestSignal: z.custom<AbortSignal>().optional(), onProgress: z.custom<AgyExecuteOptions['onProgress']>().optional(),
+  progressHeartbeatMs: z.number().int().positive().optional()
 }).strict();
 const checkAbort = (options: { signal?: AbortSignal; deadlineAt?: number }) => {
   if (options.signal?.aborted) throw new Error(String(options.signal.reason ?? 'CANCELLED'));
@@ -59,15 +62,24 @@ export function validateCommandLine(executable: string, args: string[], platform
   if ([executable, ...args].some(value => value.includes('\0'))) throw new Error('INVALID_ARGUMENT: NUL characters are not supported');
   if (platform === 'win32' && formatCommandLine(executable, args).length > 30000) throw new Error('INPUT_TOO_LARGE: escaped Windows command line exceeds 30000 characters');
 }
+// agy 无头空闲时会等待并在退出时终止后台任务，退出码仍为 0。两类行同时出现才判定，偏向精确。
+export function detectBackgroundAbort(stderr: string): boolean {
+  const lines = stderr.toLowerCase().split(/\r?\n/);
+  return lines.some(line => line.includes('idle') && line.includes('background task'))
+    && lines.some(line => line.includes('terminating') && line.includes('background task') && line.includes('on exit'));
+}
 const failureCode = (error: unknown) => /^(?:[A-Z][A-Z_]+)(?=:|$)/.exec(String(error instanceof Error ? error.message : error))?.[0] ?? 'EXECUTION_FAILED';
-function requestProgress(options: AgyExecuteOptions): (result: TaskResult) => Promise<void> {
+// 同步等待期间按此间隔重复发送当前阶段，使有空闲超时的客户端看到任务仍在运行。
+export const PROGRESS_HEARTBEAT_MS = 60000;
+function requestProgress(options: AgyExecuteOptions): (result: TaskResult, heartbeat?: boolean) => Promise<void> {
   let previous: string | undefined, sequence = -1, pending = Promise.resolve();
-  return result => {
+  return (result, heartbeat = false) => {
     const stage = result.status === 'RUNNING' ? result.currentPhase : result.status;
-    if (!options.onProgress || options.asyncMode || previous === stage) return pending;
+    if (!options.onProgress || options.asyncMode || previous === stage && !heartbeat) return pending;
     previous = stage; sequence = Math.max(sequence + 1, result.revision);
     const value = sequence;
-    const message = [stage, result.taskId, result.activeTool, result.activeFile ?? result.recentCommand,
+    const elapsed = heartbeat && result.elapsedSeconds !== null ? Math.floor(result.elapsedSeconds) + 's' : null;
+    const message = [stage, result.taskId, elapsed, result.activeTool, result.activeFile ?? result.recentCommand,
       result.errorCode].filter(Boolean).join(': ').slice(0, 512).replace(/[\uD800-\uDBFF]$/, '');
     pending = pending.then(() => options.onProgress!(value, message)).catch(error => logger.warn('Progress notification failed:', error));
     return pending;
@@ -124,9 +136,21 @@ async function launchWorker(task: TaskRecord, input: AgyExecuteOptions): Promise
 }
 
 export async function executeAgy(input: AgyExecuteOptions, workerTaskId?: string): Promise<TaskResult> {
-  let options: AgyExecuteOptions, source: string, workspace: string, model: string, effort: string, args: string[], executable: string;
-  let failureStage: NonNullable<TaskResult['failureStage']> = 'INPUT';
   const taskId = workerTaskId ?? 'task_' + Date.now() + '_' + crypto.randomUUID().slice(0, 8);
+  const prepared = prepareExecution(input);
+  if ('schemaVersion' in prepared) return prepared;
+  const task = await claimTask(prepared, taskId, workerTaskId);
+  if ('schemaVersion' in task) return task;
+  return workerTaskId ? runTask(task, prepared) : submitTask(task, prepared);
+}
+
+interface PreparedExecution {
+  options: AgyExecuteOptions; source: string; workspace: string; model: string; effort: string; args: string[]; executable: string;
+}
+// 阶段一：校验输入、解析会话与目录、确定模型和命令行；失败时不创建任务。
+function prepareExecution(input: AgyExecuteOptions): PreparedExecution | TaskResult {
+  let options: AgyExecuteOptions, source: string, workspace: string, model: string, effort: string, args: string[], executable: string;
+  const failureStage: NonNullable<TaskResult['failureStage']> = 'INPUT';
   try {
     options = { ...input, ...InputSchema.parse(input) };
     if (options.requestSignal?.aborted) throw new Error('CANCELLED');
@@ -135,6 +159,7 @@ export async function executeAgy(input: AgyExecuteOptions, workerTaskId?: string
     workspace = session?.workspaceDir ?? source;
     const safety = validateWorkspaceSafety(source); if (!safety.safe) throw new Error('INVALID_ARGUMENT: ' + safety.reason);
     const config = configManager.getConfig(); model = options.model ?? session?.model ?? config.defaultModel; effort = options.effort ?? session?.effort ?? config.defaultEffort;
+    options.autoApprove ??= config.defaultAutoApprove ?? true;
     const executionSafety = validateWorkspaceSafety(workspace); if (!executionSafety.safe) throw new Error('INVALID_ARGUMENT: ' + executionSafety.reason);
     executable = options.cliPath ?? getAgyExecutablePath(); args = buildCliArguments(options, workspace, model, effort);
     validateCommandLine(executable, args);
@@ -143,9 +168,20 @@ export async function executeAgy(input: AgyExecuteOptions, workerTaskId?: string
     return normalizeResult({ status: code === 'CANCELLED' ? 'CANCELLED' : 'ERROR', executionStatus: code, errorCode: code,
       errorMessage: String(error), failureStage, response: String(error), workspaceDir: input.workspaceDir ?? null, conversationId: input.conversationId ?? null });
   }
-  failureStage = 'PREPARING';
+  return { options, source, workspace, model, effort, args, executable };
+}
+
+// 阶段二：提交方先做版本预检再获取租约并登记任务；worker 接管已登记任务的租约。
+async function claimTask({ options, source, workspace, model, effort, executable }: PreparedExecution, taskId: string,
+  workerTaskId?: string): Promise<TaskRecord | TaskResult> {
+  const failureStage: NonNullable<TaskResult['failureStage']> = 'PREPARING';
   let leased = false, task: TaskRecord;
   try {
+    // 提交方在获取租约前完成预检；worker 继续使用已经通过预检的同一命令。
+    if (!workerTaskId) {
+      await ensureAgyVersion(executable, options.cliArgsPrefix, { cwd: workspace, signal: options.requestSignal });
+      if (options.requestSignal?.aborted) throw new Error('CANCELLED');
+    }
     if (workerTaskId) {
       task = taskTracker.get(taskId)!;
       if (!task?.lease) throw new Error('WORKER_BINDING_INVALID');
@@ -162,27 +198,37 @@ export async function executeAgy(input: AgyExecuteOptions, workerTaskId?: string
   } catch (error) {
     if (leased) releaseWorkspaceLease(taskId);
     const code = failureCode(error);
-    return normalizeResult({ status: 'ERROR', executionStatus: code, errorCode: code, errorMessage: String(error), failureStage,
+    return normalizeResult({ status: code === 'CANCELLED' ? 'CANCELLED' : 'ERROR', executionStatus: code, errorCode: code, errorMessage: String(error), failureStage,
       response: String(error), workspaceDir: source, executionWorkspaceDir: workspace, conversationId: options.conversationId ?? null });
   }
-  if (!workerTaskId) {
-    const notifyProgress = requestProgress(options);
-    await notifyProgress(task.result);
-    try { await launchWorker(task, { ...options, model, effort: effort as AgyExecuteOptions['effort'], cliPath: executable }); }
-    catch (error) {
-      if (task.workerPid && identityState(task.workerPid, task.workerCreatedAt) !== 'EXITED') {
-        task.result.errorCode = 'WORKER_START_UNCONFIRMED'; task.result.errorMessage = String(error);
-        await notifyProgress(task.result);
-        return taskTracker.report(task);
-      }
-      releaseWorkspaceLease(taskId);
-      const code = failureCode(error); taskTracker.update(task, { status: 'ERROR', executionStatus: code, errorCode: code,
-        errorMessage: String(error), stderrTail: String(error).slice(-8192), failureStage: 'PREPARING' }); taskTracker.persist(task, true);
+  return task;
+}
+
+// 阶段三（提交方）：启动独立 worker，按请求方式返回任务 ID 或等待结果。
+async function submitTask(task: TaskRecord, { options, model, effort, executable }: PreparedExecution): Promise<TaskResult> {
+  const taskId = task.result.taskId!;
+  const notifyProgress = requestProgress(options);
+  await notifyProgress(task.result);
+  try { await launchWorker(task, { ...options, model, effort: effort as AgyExecuteOptions['effort'], cliPath: executable }); }
+  catch (error) {
+    if (task.workerPid && identityState(task.workerPid, task.workerCreatedAt) !== 'EXITED') {
+      task.result.errorCode = 'WORKER_START_UNCONFIRMED'; task.result.errorMessage = String(error);
       await notifyProgress(task.result);
       return taskTracker.report(task);
     }
-    return waitForTask(task, options, notifyProgress);
+    releaseWorkspaceLease(taskId);
+    const code = failureCode(error); taskTracker.update(task, { status: 'ERROR', executionStatus: code, errorCode: code,
+      errorMessage: String(error), stderrTail: String(error).slice(-8192), failureStage: 'PREPARING' }); taskTracker.persist(task, true);
+    await notifyProgress(task.result);
+    return taskTracker.report(task);
   }
+  return waitForTask(task, options, notifyProgress);
+}
+
+// 阶段三（worker）：运行 agy、解析事件流、判定结果并在确认停止后释放租约。
+function runTask(task: TaskRecord, { options, workspace, model, effort, args, executable }: PreparedExecution): Promise<TaskResult> | TaskResult {
+  const taskId = task.result.taskId!;
+  let failureStage: NonNullable<TaskResult['failureStage']> = 'PREPARING';
   const deadlineAt = options.executionTimeoutMs === undefined ? undefined : task.startedAt + options.executionTimeoutMs;
   const deadlineTimer = deadlineAt === undefined ? undefined : setTimeout(() => task.abortController!.abort('TIMEOUT'), Math.max(1, deadlineAt - Date.now()));
   const active = { signal: task.abortController!.signal, deadlineAt };
@@ -243,6 +289,7 @@ export async function executeAgy(input: AgyExecuteOptions, workerTaskId?: string
         } catch (error) { streamFailure = error; throw error; }
       });
       taskTracker.update(task, { rawLog });
+      const workspaceBefore = options.analysis ? snapshotWorkspace(workspace) : undefined;
       failureStage = 'CLI';
       stopped = false;
       let output: Awaited<ReturnType<typeof runManagedProcess>>;
@@ -260,7 +307,8 @@ export async function executeAgy(input: AgyExecuteOptions, workerTaskId?: string
           } });
       } finally { if (logFd !== undefined) fs.closeSync(logFd); }
       stopped = output.stopped;
-      taskTracker.update(task, { processExitCode: output.exitCode, stderrTail: output.stderr.slice(-8192) });
+      taskTracker.update(task, { processExitCode: output.exitCode, stderrTail: output.stderr.slice(-8192),
+        ...compareWorkspace(workspaceBefore, workspaceBefore && snapshotWorkspace(workspace)) });
       if (!stopped) throw new Error('PROCESS_TERMINATION_UNCONFIRMED');
       if (streamFailure) throw streamFailure;
       failureStage = 'RESULT';
@@ -284,6 +332,7 @@ export async function executeAgy(input: AgyExecuteOptions, workerTaskId?: string
       }
       if (envelope.error?.trim()) throw new Error('CLI_ERROR: ' + envelope.error);
       if (output.exitCode !== 0) throw new Error('CLI_EXIT_FAILED: ' + output.exitCode);
+      if (detectBackgroundAbort(output.stderr)) throw new Error('CLI_BACKGROUND_ABORTED: agy 退出时终止了仍在运行的后台任务；response 只是部分结果，不代表任务完成。');
       checkAbort(active);
       outcome = { status: 'SUCCESS', executionStatus: 'SUCCESS', errorCode: null };
     } catch (error) {
@@ -313,13 +362,12 @@ export async function executeAgy(input: AgyExecuteOptions, workerTaskId?: string
   task.completion = execution;
   return waitForTask(task, options);
 }
-function waitForTask(task: TaskRecord, options: AgyExecuteOptions, notifyProgress = requestProgress(options)): Promise<TaskResult> | TaskResult {
-  const taskId = task.result.taskId!;
+function waitForTask(task: TaskRecord, options: AgyExecuteOptions, notifyProgress = requestProgress(options)): Promise<TaskResult> | TaskResult {  const taskId = task.result.taskId!;
   if (options.asyncMode) return taskTracker.report(task);
   return new Promise<TaskResult>(resolve => {
     let settled = false;
     const finish = () => {
-      if (settled) return; settled = true; clearTimeout(waitTimer); unsubscribe();
+      if (settled) return; settled = true; clearTimeout(waitTimer); clearInterval(heartbeat); unsubscribe();
       options.requestSignal?.removeEventListener('abort', finish);
       const result = taskTracker.report(task);
       void notifyProgress(result).then(() => resolve(result));
@@ -331,6 +379,9 @@ function waitForTask(task: TaskRecord, options: AgyExecuteOptions, notifyProgres
     });
     const waitTimer = options.requestWaitTimeoutMs === undefined ? undefined
       : setTimeout(finish, Math.max(1, options.requestWaitTimeoutMs - (Date.now() - task.startedAt)));
+    const heartbeat = options.onProgress ? setInterval(() => {
+      if (!settled && task.result.status === 'RUNNING') void notifyProgress(taskTracker.report(task), true);
+    }, options.progressHeartbeatMs ?? PROGRESS_HEARTBEAT_MS) : undefined;
     options.requestSignal?.addEventListener('abort', finish, { once: true });
     task.completion?.then(finish, finish);
     void notifyProgress(task.result);

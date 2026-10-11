@@ -1,6 +1,7 @@
 import { CliEventParser } from './cli-events.js';
 import { runManagedProcess } from './managed-process.js';
 import { QuotaResultSchema, quotaFailure, type QuotaResult } from './register-tool.js';
+import { ensureAgyVersion, AgyVersionError } from './agy-version.js';
 
 export function quotaSnapshot(data: Record<string, unknown>): QuotaResult {
   const groups = QuotaResultSchema.shape.groups.parse(data.groups);
@@ -26,6 +27,7 @@ export async function queryNativeQuota(executable: string, prefix: string[], opt
   const parser = new CliEventParser(undefined, 5 * 1024 * 1024, 'usage');
   let code = 'QUOTA_QUERY_FAILED';
   try {
+    await ensureAgyVersion(executable, prefix, options);
     // 固定原生命令：没有任务提示、会话 ID 或 --disable-slash-commands。
     const output = await runManagedProcess(executable, [...prefix, '-p', '/usage', '--output-format', 'stream-json', '--print-timeout', '10s'], {
       ...options, timeoutMs: 15000, streamingOutput: true, onStdoutChunk: chunk => parser.push(chunk)
@@ -34,10 +36,14 @@ export async function queryNativeQuota(executable: string, prefix: string[], opt
     code = !output.stopped ? 'PROCESS_TERMINATION_UNCONFIRMED' : options.signal?.aborted ? 'CANCELLED'
       : output.error === 'TIMEOUT' ? 'TIMEOUT' : parser.protocolError ? 'CLI_OUTPUT_INVALID' : 'QUOTA_QUERY_FAILED';
     if (!output.stopped || output.error || output.exitCode !== 0 || envelope?.status !== 'SUCCESS' || envelope.error?.trim() || !envelope.command || envelope.conversation_id) {
-      throw new Error(envelope?.error || parser.protocolError || output.error || output.stderr.trim() || 'Native /usage query failed');
+      const message = envelope?.error || parser.protocolError || output.error || output.stderr.trim() || 'Native /usage query failed';
+      const diagnostic = !output.stopped && output.stderr.includes('AGY_MCP_STOP_DIAGNOSTIC:') ? '\n' + output.stderr.trim() : '';
+      throw new Error(message + diagnostic);
     }
     return quotaSnapshot(envelope.command.data);
   } catch (error) {
+    if (error instanceof AgyVersionError) code = error.code;
+    else if (options.signal?.aborted) code = 'CANCELLED';
     return quotaFailure(code, String(error instanceof Error ? error.message : error));
   }
 }

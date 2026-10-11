@@ -1,9 +1,11 @@
 import fs from 'node:fs';
 import path from 'node:path';
+import os from 'node:os';
 import { execFileSync } from 'node:child_process';
 import { logger } from './logger.js';
 
 let cachedAgyPath: string | null = null;
+export const POSIX_SYSTEM_DIRECTORIES = ['/etc', '/usr', '/bin', '/sbin', '/lib', '/var', '/System', '/Library', '/private'];
 
 export function stripExtendedPrefix(p: string): string {
   if (process.platform === 'win32') {
@@ -95,7 +97,26 @@ export function validateWorkspaceSafety(dirPath: string): { safe: boolean; reaso
     };
   }
 
-  // Check 2: Windows system directories
+  // Check 2: the user's home directory itself; its subdirectories remain allowed.
+  const real = (value: string) => { try { return stripExtendedPrefix(fs.realpathSync.native(value)); } catch { return path.resolve(value); } };
+  const same = (left: string, right: string) => process.platform === 'win32' ? left.toLowerCase() === right.toLowerCase() : left === right;
+  const home = real(os.homedir());
+  if (same(normalized, home) || same(stripExtendedPrefix(normalized), home)) {
+    return { safe: false, reason: `Operating directly in the home directory (${normalized}) is prohibited; choose a project subdirectory.` };
+  }
+
+  // Check 3: POSIX system directories. The temporary directory subtree stays allowed (macOS keeps it under /private/var).
+  if (process.platform !== 'win32') {
+    const inside = (parent: string) => normalized === parent || normalized.startsWith(parent + '/');
+    const temporary = real(os.tmpdir());
+    const blocked = POSIX_SYSTEM_DIRECTORIES.find(inside);
+    const temporaryAllowed = !POSIX_SYSTEM_DIRECTORIES.includes(temporary) && normalized.startsWith(temporary + '/');
+    if (blocked && !temporaryAllowed) {
+      return { safe: false, reason: `Target workspace (${normalized}) is inside system directory ${blocked} and cannot be modified.` };
+    }
+  }
+
+  // Check 4: Windows system directories
   if (process.platform === 'win32') {
     const winDir = (process.env.WINDIR || process.env.SYSTEMROOT || 'C:\\Windows').toLowerCase();
     const progFiles = (process.env['ProgramFiles'] || 'C:\\Program Files').toLowerCase();

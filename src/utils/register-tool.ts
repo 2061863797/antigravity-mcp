@@ -36,7 +36,9 @@ export const ResultSchema = z.object({
   latestText: z.string().max(4000).default(''),
   managedProcess: z.enum(['NOT_STARTED', 'ALIVE', 'EXITED', 'UNKNOWN']), deadlineAt: z.string().nullable(),
   usage: z.record(z.unknown()).nullable(), upstreamDurationSeconds: z.number().nonnegative().nullable(),
-  rawLog: z.object({ path: z.string(), maxBytes: z.number(), writtenBytes: z.number(), truncated: z.boolean() }).strict().nullable()
+  rawLog: z.object({ path: z.string(), maxBytes: z.number(), writtenBytes: z.number(), truncated: z.boolean() }).strict().nullable(),
+  // 仅 ask 且工作目录是 git 仓库时出现；变化不代表一定由 agent 造成。
+  workspaceChanged: z.boolean().optional(), workspaceChangeSummary: z.array(z.string()).max(20).optional()
 }).strict();
 export type TaskResult = z.infer<typeof ResultSchema>;
 export const TaskSummarySchema = z.object({
@@ -80,6 +82,9 @@ export function payloadStatus(kind: 'task' | 'quota', data: TaskResult | TaskSum
 }
 function suggestNextAction(result: TaskResult): string {
   const code = result.errorCode;
+  if (code === 'AGY_VERSION_UNSUPPORTED') return '按错误信息升级 agy 后重新提交；保持所选模型和后端，不自动重试。';
+  if (code === 'AGY_VERSION_UNREADABLE') return '检查 AGY_PATH 与 agy --version 输出；必要时由用户明确设置 ANTIGRAVITY_SKIP_VERSION_CHECK=1 跳过版本预检，不自动重试。';
+  if (code === 'CLI_BACKGROUND_ABORTED') return 'agy 结束时终止了后台任务，response 为部分结果。检查已有文件；如需继续，明确要求 agent 在前台运行验证、不要使用后台命令，再由用户决定是否续接，不自动重跑。';
   if (code === 'CLI_QUOTA_EXHAUSTED') return '额度不足，已有文件和已取得的会话保留。请用户选择由父 agent 接手，或等待额度恢复后在原目录使用原会话续接；选择前不要自动重试、换模型或接手。';
   if (code === 'PROCESS_TERMINATION_UNCONFIRMED' || code === 'LEASE_RELEASE_FAILED') return '继续查询并重试取消；确认进程停止和目录占用释放前，不重新提交。';
   if (code === 'WORKSPACE_BUSY') return '等待占用目录的任务结束，或用该任务 ID 在本机查询并明确取消；确认目录释放后再提交，不要重复执行。';
@@ -103,7 +108,7 @@ export function addFailureDetails(result: TaskResult): TaskResult {
       : result.currentPhase === 'STOPPING' ? 'STOPPING' : result.errorCode.startsWith('TASK_') ? 'QUERY'
       : ['INVALID_ARGUMENT', 'INPUT_TOO_LARGE', 'TOOL_NOT_FOUND', 'AGY_NOT_FOUND'].includes(result.errorCode) ? 'INPUT'
       : result.errorCode === 'CLI_OUTPUT_INVALID' ? 'RESULT'
-      : ['CLI_ERROR', 'CLI_EXIT_FAILED', 'CLI_WAITING', 'CLI_INCOMPLETE', 'CLI_INVALID', 'CLI_INTERRUPTED', 'CLI_QUOTA_EXHAUSTED'].includes(result.errorCode) ? 'CLI' : null;
+      : ['CLI_ERROR', 'CLI_EXIT_FAILED', 'CLI_WAITING', 'CLI_INCOMPLETE', 'CLI_INVALID', 'CLI_INTERRUPTED', 'CLI_QUOTA_EXHAUSTED', 'CLI_BACKGROUND_ABORTED'].includes(result.errorCode) ? 'CLI' : null;
     result.errorMessage ??= result.cliError ?? result.errorCode;
     result.nextAction ??= suggestNextAction(result);
   } else { result.failureStage = null; result.errorMessage = null; result.nextAction = null; }
@@ -122,12 +127,12 @@ export function payloadResult(data: Partial<TaskResult> & Pick<TaskResult, 'stat
     content: [{ type: 'text', text: JSON.stringify(payload) }], structuredContent: payload };
 }
 export function registerTool<S extends z.ZodRawShape>(server: McpServer, name: string, description: string, shape: S,
-  handler: (args: z.output<z.ZodObject<S>>, extra: ToolExtra) => Promise<CallToolResult>): void {
+  handler: (args: z.output<z.ZodObject<S>>, extra: ToolExtra, raw: unknown) => Promise<CallToolResult>): void {
   const schema = z.object(shape).strict();
   const invoke = async (value: unknown, extra: ToolExtra): Promise<CallToolResult> => {
     const parsed = schema.safeParse(value);
     if (!parsed.success) return toolFailure(name, value, 'INVALID_ARGUMENT', parsed.error.message, 'INPUT');
-    try { return await handler(parsed.data, extra); }
+    try { return await handler(parsed.data, extra, value); }
     catch (error) {
       const code = /^[A-Z][A-Z_]+(?=:|$)/.exec(error instanceof Error ? error.message : String(error))?.[0] ?? 'TOOL_FAILED';
       return toolFailure(name, value, code, String(error), name === 'antigravity_status' || name === 'antigravity_cancel_task' ? 'QUERY' : 'INPUT');
