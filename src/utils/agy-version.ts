@@ -45,7 +45,8 @@ export async function ensureAgyVersion(executable: string, prefix: string[] = []
       try { const stat = fs.statSync(file); return stat.isFile() ? [file, stat.mtimeMs] : null; }
       catch { return null; }
     });
-    const key = JSON.stringify([executablePath, executableStat.mtimeMs, prefix, wrappers, prefix.length ? options.cwd : null]);
+    // 只有相对路径的前缀参数依赖工作目录；绝对路径前缀在不同目录间共享缓存。
+    const key = JSON.stringify([executablePath, executableStat.mtimeMs, prefix, wrappers, prefix.some(arg => !path.isAbsolute(arg)) ? options.cwd : null]);
     const cached = cache.get(key); if (cached) return cached;
     const { stdout, stderr } = await promisify(execFile)(executable, [...prefix, '--version'], {
       cwd: options.cwd, signal: options.signal, timeout: 10000, windowsHide: true, encoding: 'utf8', maxBuffer: 8192
