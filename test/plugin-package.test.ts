@@ -46,6 +46,9 @@ test('Windows plugin ZIP relocates with metadata, production dependencies and or
   fs.copyFileSync(packed.zip, path.join(relocated, `${name}.zip`));
   const listing = execute(tar, ['-tf', `${name}.zip`], relocated).trim().split(/\r?\n/);
   assert(listing.includes(`${name}/.agents/plugins/marketplace.json`));
+  assert(listing.includes(`${name}/.claude-plugin/marketplace.json`));
+  assert(listing.includes(`${name}/plugins/antigravity-mcp/.claude-plugin/plugin.json`));
+  assert(listing.includes(`${name}/install.ps1`));
   assert(listing.includes(`${name}/plugins/antigravity-mcp/runtime/dist/task-worker.js`));
   assert(listing.every(entry => entry.startsWith(name + '/')));
   // 仅运行代码与依赖可进入 runtime，不夹带开发源码、用户状态或诊断目录。
@@ -64,6 +67,24 @@ test('Windows plugin ZIP relocates with metadata, production dependencies and or
   assert.equal(path.resolve(directory, marketplace.plugins[0].source.path), plugin);
   assert.equal(manifest.name, 'antigravity-mcp'); assert.equal(manifest.version, '2.0.0');
   assert.equal(manifest.extensions['com.openai'].interface.displayName, 'Antigravity MCP');
+  // Claude Code 清单与 Codex 清单指向同一个插件目录和同一个运行时入口。
+  const claudeMarketplace = read(path.join(directory, '.claude-plugin/marketplace.json'));
+  const claudeManifest = read(path.join(plugin, '.claude-plugin/plugin.json'));
+  assert.equal(claudeMarketplace.name, 'antigravity-local'); assert.equal(claudeMarketplace.plugins[0].name, 'antigravity-mcp');
+  assert.equal(path.resolve(directory, claudeMarketplace.plugins[0].source), plugin);
+  assert.equal(claudeManifest.name, 'antigravity-mcp'); assert.equal(claudeManifest.version, '2.0.0');
+  const claudeServer = claudeManifest.mcpServers.antigravity, codexServer = read(path.join(plugin, 'mcp.json')).mcpServers['antigravity-mcp'];
+  assert.equal(claudeServer.command, codexServer.command);
+  assert.deepEqual(claudeServer.args.map((arg: string) => arg.replaceAll('${CLAUDE_PLUGIN_ROOT}', plugin)),
+    codexServer.args.map((arg: string) => arg.replaceAll('${PLUGIN_ROOT}', plugin)));
+  assert.deepEqual(fs.readFileSync(path.join(directory, 'install.ps1')), fs.readFileSync(path.join(root, 'plugin/install.ps1')));
+  // DryRun 只打印命令，不调用任何客户端。
+  const plan = execute(path.join(process.env.SystemRoot ?? 'C:\\Windows', 'System32/WindowsPowerShell/v1.0/powershell.exe'),
+    ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', path.join(directory, 'install.ps1'), '-Client', 'all', '-DryRun'], directory);
+  assert.equal(plan.match(/> codex plugin marketplace add /g)?.length, 1, plan);
+  assert.equal(plan.match(/> claude plugin marketplace add /g)?.length, 1, plan);
+  assert.match(plan, /> codex plugin add antigravity-mcp@antigravity-local/);
+  assert.match(plan, /> claude plugin install antigravity-mcp@antigravity-local/);
   assert.deepEqual(fs.readFileSync(path.join(plugin, 'skills/antigravity-delegation/SKILL.md')),
     fs.readFileSync(path.join(root, 'plugin/skills/antigravity-delegation/SKILL.md')));
   assert.deepEqual(read(path.join(plugin, 'runtime/config.json')), read(path.join(root, 'config.json')));
@@ -162,7 +183,7 @@ test('Windows plugin ZIP relocates with metadata, production dependencies and or
       assert.equal(complete.response, code.response); assert.equal(complete.status, 'SUCCESS');
       assert.equal(fs.readFileSync(starts, 'utf8').trim().split('\n').length, 4, '重连和查询不重跑模型');
       assert(fs.readdirSync(path.join(home, '.gemini/antigravity-mcp-jobs-v1')).some(file => file.endsWith('.task.json')));
-      assert.deepEqual(fs.readdirSync(plugin).sort(), ['mcp.json', 'plugin.json', 'runtime', 'skills']);
+      assert.deepEqual(fs.readdirSync(plugin).sort(), ['.claude-plugin', 'mcp.json', 'plugin.json', 'runtime', 'skills']);
       assert.deepEqual(fs.readdirSync(workspace).sort(), ['a.txt', 'descendant.pid', 'kept.txt']);
     } finally {
       if (activeId) await call(client, 'antigravity_cancel_task', { task_id: activeId });

@@ -91,6 +91,22 @@ AGY_PATH = "C:/Tools/agy/agy.exe"
 
 能从 PATH 或默认安装位置找到 agy 时，`env` 可以省略。配置后重新连接 MCP，确认能看到四个工具。同一个服务不要重复添加。
 
+### 另一种方式：Codex / Claude Code 插件（Windows）
+
+插件包自带运行时、依赖和协作 Skill，不需要保留源码仓库。在仓库目录生成插件包：
+
+```powershell
+npm run package:plugin
+```
+
+产物在 `release/` 下。把 ZIP 解压到长期保留的目录，然后在解压目录中运行：
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\install.ps1
+```
+
+脚本会自动安装到本机已有的 Codex 和 Claude Code。参数、手动安装、升级和卸载方法见 [插件说明](plugin/README.md)。插件和上面的手动配置二选一，不要同时使用。
+
 ## 使用示例
 
 下面是工具调用的参数，实际由 agent 提交。
@@ -291,7 +307,7 @@ npm run check
 - `live-cli-compat.mjs`：端到端兼容性验收。
 - `live-print-timeout.mjs`：`--print-timeout` 取值实验。
 
-[`plugin/`](plugin/README.md) 目录是可选的 Codex 本地插件打包源，用 `npm run package:plugin` 生成到 `release/`。协作规范 Skill 位于 [`plugin/skills/antigravity-delegation/SKILL.md`](plugin/skills/antigravity-delegation/SKILL.md)。
+协作规范 Skill 位于 [`plugin/skills/antigravity-delegation/SKILL.md`](plugin/skills/antigravity-delegation/SKILL.md)。
 
 ## 许可证
 

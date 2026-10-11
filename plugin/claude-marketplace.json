@@ -1,0 +1,13 @@
+{
+  "name": "antigravity-local",
+  "description": "Antigravity MCP 本地插件市场",
+  "owner": { "name": "2061863797" },
+  "plugins": [
+    {
+      "name": "antigravity-mcp",
+      "source": "./plugins/antigravity-mcp",
+      "description": "通过本机 agy 委派分析、编码与复核，查询任务或额度，并取消任务。",
+      "category": "productivity"
+    }
+  ]
+}

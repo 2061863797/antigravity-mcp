@@ -1,0 +1,17 @@
+{
+  "name": "antigravity-mcp",
+  "displayName": "Antigravity MCP",
+  "version": "2.0.0",
+  "description": "通过本机 agy 委派分析、编码与复核，查询任务或额度，并取消任务。需要 Node.js 20+ 和已登录的 agy。",
+  "author": { "name": "2061863797" },
+  "homepage": "https://github.com/2061863797/antigravity-mcp#readme",
+  "repository": "https://github.com/2061863797/antigravity-mcp",
+  "license": "MIT",
+  "keywords": ["mcp", "antigravity", "agy", "delegation"],
+  "mcpServers": {
+    "antigravity": {
+      "command": "node",
+      "args": ["${CLAUDE_PLUGIN_ROOT}/runtime/dist/index.js"]
+    }
+  }
+}

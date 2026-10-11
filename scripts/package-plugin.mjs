@@ -48,11 +48,14 @@ function npmCli() {
   return found;
 }
 
-for (const file of ['dist/index.js', 'dist/task-worker.js', 'config.json', 'plugin/skills/antigravity-delegation/SKILL.md']) {
+for (const file of ['dist/index.js', 'dist/task-worker.js', 'config.json', 'plugin/skills/antigravity-delegation/SKILL.md', 'plugin/install.ps1']) {
   if (!fs.existsSync(path.join(root, file))) throw new Error(`缺少 ${file}；先构建并准备插件。`);
 }
 const manifest = JSON.parse(fs.readFileSync(path.join(root, 'plugin/plugin.json'), 'utf8'));
-if (manifest.version !== pkg.version || manifest.name !== 'antigravity-mcp') throw new Error('插件与包版本或名称不一致');
+const claudeManifest = JSON.parse(fs.readFileSync(path.join(root, 'plugin/claude-plugin.json'), 'utf8'));
+for (const item of [manifest, claudeManifest]) {
+  if (item.version !== pkg.version || item.name !== 'antigravity-mcp') throw new Error('插件与包版本或名称不一致');
+}
 fs.mkdirSync(output, { recursive: true });
 if (fs.lstatSync(output).isSymbolicLink()) throw new Error('发布目录不能是链接');
 const staging = fs.mkdtempSync(path.join(output, '.plugin-build-'));
@@ -75,8 +78,14 @@ try {
   const { name: runtimeName, version, description, type, main, engines, license, dependencies } = pkg;
   fs.writeFileSync(path.join(runtime, 'package.json'), JSON.stringify({ name: runtimeName, version, description,
     type, main, engines, license, dependencies }, null, 2) + '\n');
+  // 同一目录同时是 Codex（.agents/plugins）和 Claude Code（.claude-plugin）的本地市场，共用运行时与 Skill。
   fs.mkdirSync(path.join(bundle, '.agents/plugins'), { recursive: true });
   fs.copyFileSync(path.join(root, 'plugin/marketplace.json'), path.join(bundle, '.agents/plugins/marketplace.json'));
+  fs.mkdirSync(path.join(bundle, '.claude-plugin'), { recursive: true });
+  fs.copyFileSync(path.join(root, 'plugin/claude-marketplace.json'), path.join(bundle, '.claude-plugin/marketplace.json'));
+  fs.mkdirSync(path.join(plugin, '.claude-plugin'), { recursive: true });
+  fs.copyFileSync(path.join(root, 'plugin/claude-plugin.json'), path.join(plugin, '.claude-plugin/plugin.json'));
+  fs.copyFileSync(path.join(root, 'plugin/install.ps1'), path.join(bundle, 'install.ps1'));
   fs.copyFileSync(path.join(root, 'plugin/README.md'), path.join(bundle, 'README.md'));
   if (!packed.bundled?.includes('@modelcontextprotocol/sdk') || !packed.bundled?.includes('zod')) throw new Error('npm 未包含必要生产依赖');
   const zip = path.join(staging, `${name}.zip`);

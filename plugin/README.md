@@ -1,40 +1,124 @@
-# Antigravity MCP 本地插件 2.0.0
+# Antigravity MCP 插件 2.0.0
 
-这是 Windows Codex 本地插件，内含 MCP、协作 Skill 和生产运行依赖。无需原桌面工程，也无需全局安装 `antigravity-mcp`。ZIP 用于分享，解压后安装；它不是 EXE。
+同时适用于 **Codex** 和 **Claude Code** 的本地插件，包含：
 
-## 安装与启用
+- Antigravity MCP 服务：提供 `antigravity_ask`、`antigravity_code`、`antigravity_status`、`antigravity_cancel_task` 四个工具。
+- 协作 Skill `antigravity-delegation`：约定 agent 何时、如何委派任务。
+- 运行所需的全部依赖：不需要源码仓库，也不需要 `npm install`。
 
-1. 安装 Node.js 20+，确认 `node --version` 可用。安装 agy 并完成登录，确认 `agy --version` 可用。
-2. 将 ZIP 解压到长期保留的目录，例如 `C:\Tools\antigravity-mcp-plugin-2.0.0`。该目录应直接包含 `README.md`、`.agents` 和 `plugins`。
-3. 在 PowerShell 注册这个本地市场根目录：
+这是一个 ZIP 包，不是 EXE 安装程序。目前只支持 Windows。
 
-   ```powershell
-   codex plugin marketplace add "C:\Tools\antigravity-mcp-plugin-2.0.0"
-   ```
+## 安装前准备
 
-4. 在 Codex 的插件界面找到“Antigravity MCP”，安装并启用。必要时刷新插件界面或重新打开客户端。市场注册本身不等于插件已安装。
-5. 确认插件提供四个工具：`antigravity_ask`、`antigravity_code`、`antigravity_status`、`antigravity_cancel_task`。插件生效后，再由用户禁用旧手工 MCP 配置及重复全局 Skill；保留旧文件、任务记录和 agy-staff。
+1. 安装 Node.js 20 或更高版本，确认 `node --version` 能正常输出。
+2. 安装并登录 agy，确认 `agy --version` 能正常输出（参见 [agy 官方文档](https://antigravity.google/docs/cli/headless/)）。
+3. 把 ZIP 解压到一个**长期保留**的目录，例如 `C:\Tools\antigravity-mcp-plugin-2.0.0`。
 
-Codex CLI 未在 PATH 中时，使用本机 Codex CLI 可执行文件的完整路径运行同一命令。整个解压目录须保留；不要只移动 `plugin.json` 或注册 ZIP 路径。
+   客户端会从这个目录加载插件，安装后不要移动或删除它。解压后，目录里应该直接能看到 `install.ps1`、`plugins`、`.agents`、`.claude-plugin`。
+
+## 一键安装
+
+在解压目录中打开 PowerShell，运行：
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\install.ps1
+```
+
+脚本会：
+
+1. 检查 Node.js 版本；找不到 agy 时给出提示。
+2. 找出本机已安装的客户端（`codex`、`claude` 命令），只给已安装的客户端注册插件市场 `antigravity-local`。
+3. 在这些客户端中安装插件 `antigravity-mcp`。
+
+常用参数：
+
+| 参数 | 作用 |
+| --- | --- |
+| `-Client codex` / `-Client claude` | 只安装到指定的客户端 |
+| `-Client all` | 两个客户端都安装（任一命令不存在时会失败） |
+| `-DryRun` | 只打印将要执行的命令，不做任何修改 |
+
+安装完成后，重启客户端或重新连接 MCP，确认能看到四个 antigravity 工具。
+
+## 手动安装
+
+不想运行脚本时，把下面命令中的 `<解压目录>` 换成实际路径。
+
+**Codex**
+
+```powershell
+codex plugin marketplace add "<解压目录>"
+codex plugin add antigravity-mcp@antigravity-local
+```
+
+**Claude Code**
+
+```powershell
+claude plugin marketplace add "<解压目录>"
+claude plugin install antigravity-mcp@antigravity-local
+```
+
+## 指定 agy 路径
+
+插件会依次从 PATH 和 `%LOCALAPPDATA%\agy\bin\agy.exe` 查找 agy。如果 agy 装在其他位置，在启动客户端之前设置用户环境变量 `AGY_PATH`，指向 `agy.exe` 的完整路径，然后重启客户端。
 
 ## 第一次使用
 
-在对话中明确要求使用 Antigravity MCP，例如：“用 Antigravity MCP 只读检查 C:\Projects\demo 的入口文件，先不修改。”安装和登录本身不授权运行模型任务。
+在对话中明确要求使用 Antigravity MCP，例如：
 
-协作 Skill 按任务选择同步或异步。同步适合后续工作依赖结果；异步适合父 agent 能并行推进独立工作。异步返回 taskId，可查询、取消或重连后继续查询；不承诺自动唤醒父 agent。显式 conversation_id 用于在原目录续接。
+> 用 Antigravity MCP 只读检查 C:\Projects\demo 的入口文件，先不要修改。
 
-默认模型 `gemini-3.8-flash-high`、强度 `high`、自动审批开启、原始日志关闭。自动审批允许 agy 执行命令和写文件，仍须明确任务及安全范围。调用 SUCCESS 表示 agy 调用成功，父 agent 仍须检查文件和测试。
+安装插件不等于授权 agent 运行模型任务；协作 Skill 要求必须由你明确提出后才会调用。
 
-任务、结果、会话和目录租约仍存放在当前用户的现有状态目录，不放进插件缓存。失败和取消保留已有文件改动。插件不安装 agy、不代替登录，不新增隔离、回滚或 Hook。
+默认设置：
+
+- 模型 `gemini-3.8-flash-high`，推理强度 `high`。
+- 自动审批开启：agy 可以直接执行命令、写入文件，所以委派时请说清任务范围。
+- 不保存原始输出日志。
+
+任务返回 `SUCCESS` 只表示 agy 调用成功，agent 仍需检查文件改动和测试结果。
+
+任务、结果和会话保存在用户主目录的 `.gemini\` 下，不在插件目录里，所以升级或卸载插件不会丢失这些记录。失败或取消的任务会保留已有的文件改动。
 
 ## 升级
 
-先等待活动任务结束或由用户明确取消，再在插件界面禁用旧插件。将新包解压到新目录，用 `codex plugin marketplace remove antigravity-local` 移除旧市场注册，再用 `codex plugin marketplace add "新目录"` 注册，按界面提示重新安装或启用插件并重新连接。不要在活动 worker 使用包内文件时覆盖或删除旧目录。
+1. 等待正在运行的任务结束，或先取消它们。
+2. 把新版本解压到一个**新目录**。
+3. 移除旧的市场注册（只执行你装过的客户端那一行）：
 
-卸载和升级不迁移、清理或重跑任务；保留 taskId 和 conversation_id，以便读取已有记录。本文命令仅用于用户实际安装阶段，打包脚本不会执行。
+   ```powershell
+   codex plugin marketplace remove antigravity-local
+   claude plugin marketplace remove antigravity-local
+   ```
+
+4. 在新目录中重新运行 `install.ps1`。
+5. 确认新版本可用后，再删除旧目录。
+
+如果没有先执行第 3 步，脚本检测到同名市场后会停止并提示，不会静默装上旧版本。
 
 ## 卸载
 
-在 Codex 插件界面禁用并卸载 Antigravity MCP；不再需要市场时运行 `codex plugin marketplace remove antigravity-local`。禁用插件不会代替取消后台任务，先确认相关任务已经结束。用户状态目录、旧工程和 agy-staff 均保留；是否删除解压目录由用户决定。
+1. 先确认相关任务已经结束（禁用插件不会自动取消后台任务）。
+2. 执行对应客户端的命令：
 
-本地市场和根目录清单遵循[官方插件打包与安装说明](https://developers.openai.com/plugins/build/plugins)。包内 stdio 测试通过，只证明运行包可启动；实际 Codex 插件界面的安装、展示和加载需要另行验收。
+   ```powershell
+   codex plugin remove antigravity-mcp
+   codex plugin marketplace remove antigravity-local
+   claude plugin uninstall antigravity-mcp
+   claude plugin marketplace remove antigravity-local
+   ```
+
+3. 之后可以删除解压目录。`.gemini\` 下的任务记录会保留，是否删除由你决定。
+
+## 安装包结构
+
+```text
+install.ps1                         一键安装脚本
+.agents/plugins/marketplace.json    Codex 插件市场清单
+.claude-plugin/marketplace.json     Claude Code 插件市场清单
+plugins/antigravity-mcp/
+  plugin.json, mcp.json             Codex 插件清单
+  .claude-plugin/plugin.json        Claude Code 插件清单
+  skills/antigravity-delegation/    协作 Skill（两个客户端共用）
+  runtime/                          MCP 服务及其依赖（两个客户端共用）
+```
