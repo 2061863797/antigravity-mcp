@@ -32,7 +32,7 @@ export interface AgyExecuteOptions {
 const InputSchema = z.object({
   prompt: z.string().trim().min(1).max(24000), context: z.string().max(20000).optional(), workspaceDir: z.string().min(1).max(32767).refine(path.isAbsolute),
   model: z.string().regex(/^[a-zA-Z0-9][a-zA-Z0-9._-]{0,127}$/).optional(), effort: z.enum(['low', 'medium', 'high', 'xhigh', 'max']).optional(),
-  analysis: z.boolean().optional(), autoApprove: z.boolean().default(true),
+  analysis: z.boolean().optional(), autoApprove: z.boolean().optional(),
   mode: z.enum(['plan', 'accept-edits']).optional(), conversationId: z.string().min(1).max(256).optional(), asyncMode: z.boolean().optional(),
   debugLog: z.boolean().optional(),
   requestWaitTimeoutMs: z.number().positive().max(86400000).optional(), executionTimeoutMs: z.number().positive().max(86400000).optional(),
@@ -143,6 +143,7 @@ export async function executeAgy(input: AgyExecuteOptions, workerTaskId?: string
     workspace = session?.workspaceDir ?? source;
     const safety = validateWorkspaceSafety(source); if (!safety.safe) throw new Error('INVALID_ARGUMENT: ' + safety.reason);
     const config = configManager.getConfig(); model = options.model ?? session?.model ?? config.defaultModel; effort = options.effort ?? session?.effort ?? config.defaultEffort;
+    options.autoApprove ??= config.defaultAutoApprove ?? true;
     const executionSafety = validateWorkspaceSafety(workspace); if (!executionSafety.safe) throw new Error('INVALID_ARGUMENT: ' + executionSafety.reason);
     executable = options.cliPath ?? getAgyExecutablePath(); args = buildCliArguments(options, workspace, model, effort);
     validateCommandLine(executable, args);

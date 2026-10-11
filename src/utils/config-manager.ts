@@ -3,7 +3,9 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { z } from 'zod';
 const ConfigSchema = z.object({ defaultModel: z.string().regex(/^[a-z0-9][a-z0-9._-]{0,127}$/),
-  defaultEffort: z.enum(['low', 'medium', 'high', 'xhigh', 'max']) }).strict();
+  defaultEffort: z.enum(['low', 'medium', 'high', 'xhigh', 'max']),
+  // 调用方未传 auto_approve 时使用；省略时保持原有的 true。
+  defaultAutoApprove: z.boolean().optional() }).strict();
 export type AppConfig = z.infer<typeof ConfigSchema>;
 const defaults: AppConfig = { defaultModel: 'gemini-3.8-flash-high', defaultEffort: 'high' };
 export class ConfigManager {

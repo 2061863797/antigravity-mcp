@@ -210,7 +210,7 @@ worker 意外崩溃后的自动后代清理目前仅 Windows 支持。POSIX 没�
 | `model` | 配置默认值 | 用户指定优先，不自动切换 |
 | `effort` | 配置默认值 | 接受 low、medium、high、xhigh、max；CLI 不支持时失败 |
 | `cli_mode` | `accept-edits` | 明确规划时选择 `plan` |
-| `auto_approve` | `true` | 原生自动审批；false 遵循本机 agy 权限配置 |
+| `auto_approve` | `true`（可由配置改变） | 原生自动审批；false 遵循本机 agy 权限配置 |
 | `async_mode` | `false` | true 返回任务 ID，之后查询 |
 | `timeout_minutes` | 不设置 | 只限制同步等待；到期后台任务继续 |
 | `execution_timeout_minutes` | 不设置 | 限制准备和 agy 执行；到期停止任务 |
@@ -227,6 +227,8 @@ worker 意外崩溃后的自动后代清理目前仅 Windows 支持。POSIX 没�
   "defaultEffort": "high"
 }
 ```
+
+可选字段 `defaultAutoApprove`（布尔）设定调用方**省略** `auto_approve` 时的审批方式，未配置时为 `true`，与此前行为一致。优先级：本次显式传入的 `auto_approve` → 配置 `defaultAutoApprove` → `true`。工具 schema 中公布的默认值仍为 `true`；设为 `false` 后，省略该参数的任务遵循本机 agy 权限配置和白名单。
 
 默认模型须在你的 agy 账号中可用；不可用时由用户显式指定可用模型，不自动替换。续接的模型与强度按“本次显式值 → 会话保存值 → 服务默认值”选择。可通过绝对路径 `ANTIGRAVITY_CONFIG_PATH` 使用自定义配置；启动时只读，不改写。
 

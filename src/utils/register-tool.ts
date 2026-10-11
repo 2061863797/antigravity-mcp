@@ -127,12 +127,12 @@ export function payloadResult(data: Partial<TaskResult> & Pick<TaskResult, 'stat
     content: [{ type: 'text', text: JSON.stringify(payload) }], structuredContent: payload };
 }
 export function registerTool<S extends z.ZodRawShape>(server: McpServer, name: string, description: string, shape: S,
-  handler: (args: z.output<z.ZodObject<S>>, extra: ToolExtra) => Promise<CallToolResult>): void {
+  handler: (args: z.output<z.ZodObject<S>>, extra: ToolExtra, raw: unknown) => Promise<CallToolResult>): void {
   const schema = z.object(shape).strict();
   const invoke = async (value: unknown, extra: ToolExtra): Promise<CallToolResult> => {
     const parsed = schema.safeParse(value);
     if (!parsed.success) return toolFailure(name, value, 'INVALID_ARGUMENT', parsed.error.message, 'INPUT');
-    try { return await handler(parsed.data, extra); }
+    try { return await handler(parsed.data, extra, value); }
     catch (error) {
       const code = /^[A-Z][A-Z_]+(?=:|$)/.exec(error instanceof Error ? error.message : String(error))?.[0] ?? 'TOOL_FAILED';
       return toolFailure(name, value, code, String(error), name === 'antigravity_status' || name === 'antigravity_cancel_task' ? 'QUERY' : 'INPUT');

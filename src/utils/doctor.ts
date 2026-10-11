@@ -34,8 +34,8 @@ export async function runDoctor(options: DoctorOptions = {}): Promise<DoctorRepo
   try {
     // 配置在模块加载时解析；动态导入使无效配置成为检查结果而不是启动崩溃。
     const { configManager } = await import('./config-manager.js');
-    const { defaultModel, defaultEffort } = configManager.getConfig();
-    checks.push({ name: 'config', ok: true, detail: { path: configPath, exists: fs.existsSync(configPath), defaultModel, defaultEffort,
+    const { defaultModel, defaultEffort, defaultAutoApprove } = configManager.getConfig();
+    checks.push({ name: 'config', ok: true, detail: { path: configPath, exists: fs.existsSync(configPath), defaultModel, defaultEffort, defaultAutoApprove: defaultAutoApprove ?? true,
       note: '默认模型是否在 agy 账号中可用未经模型调用验证；不可用时由用户显式指定 model。' } });
   } catch (error) { checks.push({ name: 'config', ok: false, detail: { path: configPath, error: message(error) } }); }
 
