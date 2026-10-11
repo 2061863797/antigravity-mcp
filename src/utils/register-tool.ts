@@ -36,7 +36,9 @@ export const ResultSchema = z.object({
   latestText: z.string().max(4000).default(''),
   managedProcess: z.enum(['NOT_STARTED', 'ALIVE', 'EXITED', 'UNKNOWN']), deadlineAt: z.string().nullable(),
   usage: z.record(z.unknown()).nullable(), upstreamDurationSeconds: z.number().nonnegative().nullable(),
-  rawLog: z.object({ path: z.string(), maxBytes: z.number(), writtenBytes: z.number(), truncated: z.boolean() }).strict().nullable()
+  rawLog: z.object({ path: z.string(), maxBytes: z.number(), writtenBytes: z.number(), truncated: z.boolean() }).strict().nullable(),
+  // 仅 ask 且工作目录是 git 仓库时出现；变化不代表一定由 agent 造成。
+  workspaceChanged: z.boolean().optional(), workspaceChangeSummary: z.array(z.string()).max(20).optional()
 }).strict();
 export type TaskResult = z.infer<typeof ResultSchema>;
 export const TaskSummarySchema = z.object({

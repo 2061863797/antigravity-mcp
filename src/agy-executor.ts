@@ -19,6 +19,7 @@ import { isQuotaExhaustion } from './utils/native-quota.js';
 import { knownCreatedAt, identityState } from './utils/process-identity.js';
 import { killProcessTree } from './utils/process-killer.js';
 import { ensureAgyVersion } from './utils/agy-version.js';
+import { snapshotWorkspace, compareWorkspace } from './utils/workspace-change.js';
 
 export interface AgyExecuteOptions {
   prompt: string; context?: string; workspaceDir: string; model?: string; effort?: 'low' | 'medium' | 'high' | 'xhigh' | 'max';
@@ -255,6 +256,7 @@ export async function executeAgy(input: AgyExecuteOptions, workerTaskId?: string
         } catch (error) { streamFailure = error; throw error; }
       });
       taskTracker.update(task, { rawLog });
+      const workspaceBefore = options.analysis ? snapshotWorkspace(workspace) : undefined;
       failureStage = 'CLI';
       stopped = false;
       let output: Awaited<ReturnType<typeof runManagedProcess>>;
@@ -272,7 +274,8 @@ export async function executeAgy(input: AgyExecuteOptions, workerTaskId?: string
           } });
       } finally { if (logFd !== undefined) fs.closeSync(logFd); }
       stopped = output.stopped;
-      taskTracker.update(task, { processExitCode: output.exitCode, stderrTail: output.stderr.slice(-8192) });
+      taskTracker.update(task, { processExitCode: output.exitCode, stderrTail: output.stderr.slice(-8192),
+        ...compareWorkspace(workspaceBefore, workspaceBefore && snapshotWorkspace(workspace)) });
       if (!stopped) throw new Error('PROCESS_TERMINATION_UNCONFIRMED');
       if (streamFailure) throw streamFailure;
       failureStage = 'RESULT';

@@ -120,7 +120,7 @@ node "C:\Projects\antigravity-mcp\dist\index.js" --doctor
 }
 ```
 
-`ask` 默认通过任务指令要求只分析、不写文件，**不是系统级只读保护**。`ask` 和 `code` 均默认使用 `accept-edits`；只有明确需要规划时才传 `cli_mode: "plan"`。规划模式不是通用只读开关。
+`ask` 默认通过任务指令要求只分析、不写文件，**不是系统级只读保护**。工作目录是 git 仓库时，`ask` 在 agy 运行前后各读取一次 `HEAD` 和 `git status --porcelain=v1 -z`，结果附带 `workspaceChanged`；有变化时另附最多 20 个路径的 `workspaceChangeSummary`。这只表示**运行期间工作区发生变化**，不断言是 agent 修改的（用户或编辑器可能同时在改），也不拦截或回滚。已有改动的文件再次被修改而状态码不变时无法识别。非 git 目录或 git 命令失败时两个字段都省略，不影响任务结果。`ask` 和 `code` 均默认使用 `accept-edits`；只有明确需要规划时才传 `cli_mode: "plan"`。规划模式不是通用只读开关。
 
 ### 后台编码
 
