@@ -28,24 +28,68 @@ async function findDescendantPids(rootPid: number): Promise<number[]> {
   }
 }
 
+const procPids = (names: string[]) => names.filter(name => /^[1-9][0-9]*$/.test(name))
+  .map(Number).filter(pid => Number.isSafeInteger(pid) && pid !== process.pid);
+function tokenMatcher(token: string): (environment: Buffer) => boolean {
+  const needle = Buffer.from('AGY_MCP_JOB_TOKEN=' + token + '\0');
+  const delimited = Buffer.concat([Buffer.from([0]), needle]);
+  return environment => environment.subarray(0, needle.length).equals(needle) || environment.includes(delimited);
+}
+
 // Linux：环境变量会跨 setsid / 重新认父继承，可据此找到已脱离进程树的逃逸后代。
 export async function findPidsByEnvToken(token: string): Promise<number[]> {
   if (process.platform !== 'linux') return [];
-  const needle = Buffer.from('AGY_MCP_JOB_TOKEN=' + token + '\0');
-  const delimited = Buffer.concat([Buffer.from([0]), needle]);
+  const matches = tokenMatcher(token);
   const found: number[] = [];
-  for (const name of await fs.promises.readdir('/proc').catch(() => [] as string[])) {
-    if (!/^[1-9][0-9]*$/.test(name) || Number(name) === process.pid) continue;
+  // 无法枚举 /proc 不能当作没有后代；调用方继续保留停止未确认状态。
+  for (const pid of procPids(await fs.promises.readdir('/proc'))) {
     try {
-      const environment = await fs.promises.readFile('/proc/' + name + '/environ');
-      if (environment.subarray(0, needle.length).equals(needle) || environment.includes(delimited)) found.push(Number(name));
+      if (matches(await fs.promises.readFile('/proc/' + pid + '/environ'))) found.push(pid);
     } catch { /* 已退出或无权读取 */ }
+  }
+  return found;
+}
+
+// 状态查询和租约获取是同步接口，使用相同的完整条目规则核对逃逸后代。
+export function findPidsByEnvTokenSync(token: string): number[] {
+  if (process.platform !== 'linux') return [];
+  const matches = tokenMatcher(token), found: number[] = [];
+  for (const pid of procPids(fs.readdirSync('/proc'))) {
+    try { if (matches(fs.readFileSync('/proc/' + pid + '/environ'))) found.push(pid); }
+    catch { /* 已退出或无权读取 */ }
   }
   return found;
 }
 
 // POSIX 先发 SIGTERM 让 agy 收尾，宽限期后仍存活的再 SIGKILL；Windows 仍由 Job Object 硬杀。
 export const POSIX_TERM_GRACE_MS = 5000;
+
+export async function terminatePosixTargets(pids: number[], options: {
+  termGraceMs?: number; signal?: (pid: number, name: NodeJS.Signals) => void | Promise<void>;
+  isAlive?: (pid: number) => boolean | Promise<boolean>; sleep?: (ms: number) => Promise<void>; now?: () => number
+} = {}): Promise<{ success: boolean; verifiedTerminated: boolean }> {
+  const targets = [...new Set(pids)], isAlive = options.isAlive ?? isProcessAlive;
+  const send = options.signal ?? ((pid, name) => { process.kill(pid, name); });
+  const sleep = options.sleep ?? (ms => new Promise<void>(resolve => setTimeout(resolve, ms)));
+  const now = options.now ?? Date.now;
+  let success = false;
+  const signal = async (name: NodeJS.Signals) => {
+    for (const target of targets) {
+      if (!await isAlive(target)) continue;
+      try { await send(target, name); success = true; }
+      catch { /* 信号失败不能代替下面的存活核对。 */ }
+    }
+  };
+  await signal('SIGTERM');
+  const graceEnd = now() + Math.max(0, options.termGraceMs ?? POSIX_TERM_GRACE_MS);
+  while (now() < graceEnd && (await Promise.all(targets.map(isAlive))).some(Boolean)) await sleep(100);
+  await signal('SIGKILL');
+  for (let attempt = 0; attempt < 32; attempt++) {
+    if ((await Promise.all(targets.map(isAlive))).every(alive => !alive)) return { success: true, verifiedTerminated: true };
+    await sleep(250);
+  }
+  return { success, verifiedTerminated: false };
+}
 
 export async function killProcessTree(pid: number, expectedCreatedAt?: string, jobToken?: string, options: {
   onDiagnostic?: (message: string) => void; termGraceMs?: number
@@ -61,39 +105,22 @@ export async function killProcessTree(pid: number, expectedCreatedAt?: string, j
     }
     return killWindowsTree(pid, expected, options.onDiagnostic);
   }
-  let descendants: number[] = [];
+  let descendants: number[] = [], enumerated = true;
+  try { descendants = await findDescendantPids(pid); } catch { enumerated = false; }
   try {
-    descendants = await findDescendantPids(pid);
-  } catch {
-    try {
-      process.kill(pid, 'SIGKILL');
-    } catch {}
+    const escaped = jobToken ? await findPidsByEnvToken(jobToken) : [];
+    const linuxToken = process.platform === 'linux' && jobToken !== undefined;
+    // 根 PID 已退出或复用时，不能按它的新父子关系杀死无关进程。
+    const rootMatched = !linuxToken || escaped.includes(pid);
+    const targets = [...escaped, ...rootMatched ? [pid, ...descendants] : []];
+    const result = await terminatePosixTargets(targets, options);
+    const rootUnconfirmed = linuxToken && !rootMatched && await isProcessAlive(pid);
+    const remaining = jobToken ? await findPidsByEnvToken(jobToken) : [];
+    return { success: result.success, verifiedTerminated: result.verifiedTerminated && enumerated && !rootUnconfirmed && !remaining.length };
+  } catch (error) {
+    options.onDiagnostic?.('POSIX stop unconfirmed: ' + String(error));
     return { success: false, verifiedTerminated: false };
   }
-  const escaped = jobToken ? await findPidsByEnvToken(jobToken) : [];
-  const targets = [...new Set([pid, ...descendants, ...escaped])];
-  let success = false;
-  const signal = async (name: NodeJS.Signals) => {
-    for (const target of targets) {
-      if (!await isProcessAlive(target)) continue;
-      try {
-        process.kill(target, name);
-        success = true;
-      } catch { /* Verification remains conservative on permission/command errors. */ }
-    }
-  };
-  await signal('SIGTERM');
-  const graceEnd = Date.now() + Math.max(0, options.termGraceMs ?? POSIX_TERM_GRACE_MS);
-  while (Date.now() < graceEnd && (await Promise.all(targets.map(isProcessAlive))).some(Boolean)) {
-    await new Promise(r => setTimeout(r, 100));
-  }
-  await signal('SIGKILL');
-  for (let i = 0; i < 32; i++) {
-    const alive = await Promise.all(targets.map(isProcessAlive));
-    if (alive.every(isAlive => !isAlive)) return { success: true, verifiedTerminated: true };
-    await new Promise(r => setTimeout(r, 250));
-  }
-  return { success, verifiedTerminated: false };
 }
 async function killWindowsTree(pid: number, expected: string, onDiagnostic?: (message: string) => void): Promise<{ success: boolean; verifiedTerminated: boolean }> {
   const script = String.raw`

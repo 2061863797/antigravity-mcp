@@ -187,10 +187,11 @@ async function claimTask({ options, source, workspace, model, effort, executable
       if (!task?.lease) throw new Error('WORKER_BINDING_INVALID');
       adoptWorkspaceLease(taskId, workspace, task.lease); leased = true; task = taskTracker.attachLocal(taskId);
     } else {
-      leased = acquireWorkspaceLease(taskId, workspace);
+      const posixJobToken = process.platform === 'linux' ? crypto.randomUUID() : undefined;
+      leased = acquireWorkspaceLease(taskId, workspace, posixJobToken);
       if (!leased) throw new Error('WORKSPACE_BUSY: another task owns this execution directory');
       task = taskTracker.create({ taskId, workspaceDir: source, executionWorkspaceDir: workspace, model, effort,
-        cliMode: options.mode ?? 'accept-edits', autoApprove: options.autoApprove ?? true, conversationId: options.conversationId ?? null });
+        cliMode: options.mode ?? 'accept-edits', autoApprove: options.autoApprove ?? true, conversationId: options.conversationId ?? null }, posixJobToken);
       task.lease = workspaceLeaseReference(taskId);
       task.result.deadlineAt = options.executionTimeoutMs === undefined ? null : new Date(task.startedAt + options.executionTimeoutMs).toISOString();
       taskTracker.persist(task, true);
@@ -294,7 +295,7 @@ function runTask(task: TaskRecord, { options, workspace, model, effort, args, ex
       stopped = false;
       let output: Awaited<ReturnType<typeof runManagedProcess>>;
       try {
-        output = await runManagedProcess(executable, args, { cwd: workspace, signal: active.signal, streamingOutput: true,
+        output = await runManagedProcess(executable, args, { cwd: workspace, signal: active.signal, streamingOutput: true, jobToken: task.posixJobToken,
           onSpawn: (pid, createdAt) => { track(pid, true, createdAt); taskTracker.update(task, { executionStarted: true }); },
           onExit: pid => track(pid, false), onOutput: () => taskTracker.output(task),
           onStdoutChunk: chunk => {

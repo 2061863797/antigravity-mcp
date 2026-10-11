@@ -2,14 +2,15 @@ import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import { canonicalPath } from './paths.js';
-import { stateHome, writeJson } from './task-store.js';
+import { stateHome, writeJson, readTask } from './task-store.js';
 import { identityState, requireSelfIdentity } from './process-identity.js';
+import { findPidsByEnvTokenSync } from './process-killer.js';
 
-interface Lease { token: string; ownerPid: number; ownerCreatedAt?: string; workspace: string; taskId: string; children: number[]; childCreatedAt?: Record<string, string> }
+interface Lease { token: string; ownerPid: number; ownerCreatedAt?: string; workspace: string; taskId: string; children: number[]; childCreatedAt?: Record<string, string>; posixJobToken?: string }
 const owned = new Map<string, { file: string; lease: Lease }>();
 const root = () => path.join(stateHome(), '.gemini', 'antigravity-mcp-leases');
 const overlaps = (a: string, b: string) => a === b || a.startsWith(b + path.sep) || b.startsWith(a + path.sep);
-export function acquireWorkspaceLease(taskId: string, directory: string): boolean {
+export function acquireWorkspaceLease(taskId: string, directory: string, posixJobToken?: string): boolean {
   const existing = owned.get(taskId);
   if (existing) {
     const requested = canonicalPath(directory);
@@ -40,11 +41,18 @@ export function acquireWorkspaceLease(taskId: string, directory: string): boolea
         const children = Array.isArray(lease.children) ? lease.children : [];
         if (!Number.isSafeInteger(lease.ownerPid) || lease.ownerPid <= 0 || typeof lease.workspace !== 'string' || typeof lease.taskId !== 'string' || children.some(pid => !Number.isSafeInteger(pid) || pid <= 0)) throw new Error('INVALID_LEASE');
         if (lease.ownerCreatedAt !== undefined && (typeof lease.ownerCreatedAt !== 'string' || !/^[0-9]{1,30}$/.test(lease.ownerCreatedAt))) throw new Error('INVALID_LEASE');
+        if (lease.posixJobToken !== undefined && (typeof lease.posixJobToken !== 'string' || !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(lease.posixJobToken))) throw new Error('INVALID_LEASE');
         if (lease.childCreatedAt !== undefined && (!lease.childCreatedAt || typeof lease.childCreatedAt !== 'object' || Array.isArray(lease.childCreatedAt)
             || Object.entries(lease.childCreatedAt).some(([pid, value]) => !/^[1-9][0-9]{0,9}$/.test(pid) || typeof value !== 'string' || !/^[0-9]{1,30}$/.test(value)))) throw new Error('INVALID_LEASE');
         if (!overlaps(workspace, lease.workspace)) continue;
         if (identityState(lease.ownerPid, lease.ownerCreatedAt, undefined, true) === 'EXITED'
             && children.every(pid => identityState(pid, lease.childCreatedAt?.[pid], undefined, true) === 'EXITED')) {
+          if (process.platform === 'linux') {
+            try {
+              if (lease.posixJobToken ? findPidsByEnvTokenSync(lease.posixJobToken).length > 0
+                : readTask(lease.taskId)?.result.executionStarted) return false;
+            } catch { return false; } // 无法核对逃逸后代或旧任务时不能接管租约。
+          }
           try { fs.unlinkSync(file); } catch {}
           continue;
         }
@@ -53,7 +61,7 @@ export function acquireWorkspaceLease(taskId: string, directory: string): boolea
       } catch (error) { throw new Error(`LEASE_RECORD_INVALID (${file}): ${String(error)}`); }
     }
     const token = crypto.randomUUID(), file = path.join(root(), token + '.json');
-    const lease: Lease = { token, ownerPid: process.pid, ownerCreatedAt: requireSelfIdentity(), taskId, workspace, children: [], childCreatedAt: {} };
+    const lease: Lease = { token, ownerPid: process.pid, ownerCreatedAt: requireSelfIdentity(), taskId, workspace, children: [], childCreatedAt: {}, posixJobToken };
     fs.writeFileSync(file, JSON.stringify(lease), { flag: 'wx' });
     owned.set(taskId, { file, lease }); return true;
   } finally {

@@ -15,6 +15,7 @@ const RecordSchema = z.object({ version: z.literal(1), result: ResultSchema, sta
   childPids: z.array(z.number().int().positive()), ownerPid: z.number().int().positive(), workerPid: z.number().int().positive().nullable(),
   ownerCreatedAt: z.string().regex(/^[0-9]{1,30}$/).optional(), workerCreatedAt: z.string().regex(/^[0-9]{1,30}$/).optional(),
   childCreatedAt: z.record(z.string().regex(/^[1-9][0-9]{0,9}$/), z.string().regex(/^[0-9]{1,30}$/)).optional(),
+  posixJobToken: z.string().uuid().optional(),
   token: z.string().uuid(), ready: z.boolean(), heartbeatAt: z.number().nonnegative(),
   lease: z.object({ file: z.string(), token: z.string().uuid() }).nullable() }).strict();
 export type StoredTask = z.infer<typeof RecordSchema>;

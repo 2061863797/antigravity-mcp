@@ -1,5 +1,5 @@
 import { addFailureDetails, normalizeResult, type TaskResult } from './register-tool.js';
-import { killProcessTree } from './process-killer.js';
+import { killProcessTree, findPidsByEnvTokenSync } from './process-killer.js';
 import { releaseWorkspaceLease } from './workspace-lease.js';
 import { logger } from './logger.js';
 import crypto from 'node:crypto';
@@ -15,14 +15,14 @@ export class TaskTracker {
   private listeners = new Map<string, Set<() => void>>();
   private watchers = new Map<string, ReturnType<typeof setInterval>>();
   private stamps = new Map<string, string>();
-  public create(data: Partial<TaskResult> & { taskId: string; workspaceDir: string }): TaskRecord {
+  public create(data: Partial<TaskResult> & { taskId: string; workspaceDir: string }, posixJobToken?: string): TaskRecord {
     if (this.get(data.taskId)) throw new Error('TASK_ALREADY_EXISTS');
     const startedAt = Date.now();
     const task: TaskRecord = { result: normalizeResult({ ...data, status: 'RUNNING', executionStatus: 'RUNNING', currentPhase: 'PREPARING',
       startedAt: new Date(startedAt).toISOString(), lastObservedAt: new Date(startedAt).toISOString() }),
       version: 1, startedAt, childPids: [], ownerPid: process.pid, workerPid: null,
       ownerCreatedAt: requireSelfIdentity(), childCreatedAt: {},
-      token: crypto.randomUUID(), ready: false, heartbeatAt: startedAt, lease: null, abortController: new AbortController() };
+      token: crypto.randomUUID(), posixJobToken, ready: false, heartbeatAt: startedAt, lease: null, abortController: new AbortController() };
     this.persist(task, true); this.tasks.set(data.taskId, task); this.prune();
     return task;
   }
@@ -40,7 +40,7 @@ export class TaskTracker {
         if (stamp === undefined) this.stamps.delete(id); else this.stamps.set(id, stamp);
       }
       if (task.result.status === 'RUNNING' && identityState(task.ownerPid, task.ownerCreatedAt, task.heartbeatAt) === 'EXITED') {
-        const pending = task.childPids.some(pid => identityState(pid, task!.childCreatedAt?.[pid]) !== 'EXITED');
+        const pending = task.childPids.some(pid => identityState(pid, task!.childCreatedAt?.[pid]) !== 'EXITED') || this.hasEscapedProcesses(task);
         const code = pending ? 'PROCESS_TERMINATION_UNCONFIRMED' : 'WORKER_INTERRUPTED';
         if (task.result.executionStatus !== code) {
           task.result = addFailureDetails({ ...task.result, status: pending ? 'RUNNING' : 'ERROR', executionStatus: code, errorCode: code,
@@ -67,7 +67,7 @@ export class TaskTracker {
       task.persistTimer = undefined;
       saveTask({ version: 1, result: task.result, startedAt: task.startedAt, childPids: task.childPids,
         ownerPid: task.ownerPid, workerPid: task.workerPid, token: task.token, ready: task.ready,
-        ownerCreatedAt: task.ownerCreatedAt, workerCreatedAt: task.workerCreatedAt, childCreatedAt: task.childCreatedAt,
+        ownerCreatedAt: task.ownerCreatedAt, workerCreatedAt: task.workerCreatedAt, childCreatedAt: task.childCreatedAt, posixJobToken: task.posixJobToken,
         heartbeatAt: task.heartbeatAt, lease: task.lease });
     };
     if (immediate) { clearTimeout(task.persistTimer); write(); }
@@ -141,6 +141,15 @@ export class TaskTracker {
     try { pruneTasks(); } catch (error) { logger.warn('Completed task cleanup failed:', error); }
     this.prune();
   }
+  private escapedPids(task: TaskRecord): number[] {
+    if (process.platform !== 'linux') return [];
+    if (task.posixJobToken) return findPidsByEnvTokenSync(task.posixJobToken);
+    if (task.result.executionStarted) throw new Error('旧 Linux 任务记录缺少清理令牌，无法确认逃逸后代停止；需要人工核对遗留进程。');
+    return [];
+  }
+  private hasEscapedProcesses(task: TaskRecord): boolean {
+    try { return this.escapedPids(task).length > 0; } catch { return true; }
+  }
   public subscribe(id: string, listener: () => void): () => void {
     const remote = this.get(id)?.remote;
     let subscribers = this.listeners.get(id); if (!subscribers) this.listeners.set(id, subscribers = new Set());
@@ -179,12 +188,18 @@ export class TaskTracker {
       if (!task.abortController?.signal.aborted) task.abortController?.abort(reason);
       if (task.completion) await task.completion;
       if (task.result.status !== 'RUNNING') return;
-      const stopped = await Promise.all(task.childPids.map(pid => {
+      let targets: number[];
+      try { targets = [...new Set([...task.childPids, ...this.escapedPids(task)])]; }
+      catch (error) {
+        this.update(task, { currentPhase: 'STOPPING', executionStatus: 'PROCESS_TERMINATION_UNCONFIRMED',
+          errorCode: 'PROCESS_TERMINATION_UNCONFIRMED', errorMessage: String(error) }); return;
+      }
+      const stopped = await Promise.all(targets.map(pid => {
         const state = identityState(pid, task.childCreatedAt?.[pid], undefined, true);
         return state === 'EXITED' ? { verifiedTerminated: true } : state === 'UNKNOWN' ? { verifiedTerminated: false }
-          : killProcessTree(pid, task.childCreatedAt?.[pid]);
+          : killProcessTree(pid, task.childCreatedAt?.[pid], task.posixJobToken);
       }));
-      if (stopped.some(result => !result.verifiedTerminated)) {
+      if (stopped.some(result => !result.verifiedTerminated) || this.hasEscapedProcesses(task)) {
         this.update(task, { currentPhase: 'STOPPING', executionStatus: 'PROCESS_TERMINATION_UNCONFIRMED', errorCode: 'PROCESS_TERMINATION_UNCONFIRMED' }); return;
       }
       task.childPids = []; releaseWorkspaceLease(id);

@@ -318,7 +318,7 @@ export function formatCommandLine(executable: string, args: string[]): string {
 }
 
 export async function runManagedProcess(executable: string, args: string[], options: {
-  cwd?: string; signal?: AbortSignal; timeoutMs?: number; shell?: boolean;
+  cwd?: string; signal?: AbortSignal; timeoutMs?: number; shell?: boolean; jobToken?: string;
   onSpawn?: (pid: number, createdAt?: string) => void; onExit?: (pid: number) => void; onOutput?: (text: string) => void;
   onStdoutChunk?: (chunk: Buffer) => void; streamingOutput?: boolean;
 } = {}): Promise<ProcessResult> {
@@ -333,7 +333,7 @@ export async function runManagedProcess(executable: string, args: string[], opti
       for (const key of pathKeys) delete env[key];
       env.Path = [path.dirname(process.execPath), inheritedPath, path.join(process.env.SystemRoot ?? 'C:\\Windows', 'System32')].filter(Boolean).join(path.delimiter);
     }
-    const jobToken = process.platform === 'win32' ? undefined : crypto.randomUUID();
+    const jobToken = process.platform === 'win32' ? undefined : options.jobToken ?? crypto.randomUUID();
     if (jobToken) env.AGY_MCP_JOB_TOKEN = jobToken;
     const workingDir = options.cwd ?? process.cwd();
 
