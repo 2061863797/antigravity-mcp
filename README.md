@@ -280,7 +280,30 @@ powershell -ExecutionPolicy Bypass -File .\install.ps1
 | `CLI_BACKGROUND_ABORTED` | 让 agent 在前台运行验证命令，不要用后台命令 |
 | `TASK_NOT_FOUND` | 核对 `taskId`；已完成的记录只保留最近 100 个 |
 | 请求超时但任务仍在运行 | 用 `taskId` 查询，不要重复提交 |
+| 任务长时间停在等待后台命令（stderr 有 `waiting up to 30m0s for ... background task(s)`） | agy 把命令放到了后台，退出前最多等 30 分钟，最终会报 `CLI_BACKGROUND_ABORTED`。可以直接取消；委派时要求 agent 在前台运行验证命令，或用 `execution_timeout_minutes` 限制总时长 |
+| Linux 上升级前创建的任务一直显示 `PROCESS_TERMINATION_UNCONFIRMED`，目录一直被占用 | 旧任务记录缺少清理令牌，无法自动确认已停止，见下方“Linux：手动清理升级前的任务” |
 | `--doctor` 提示 PowerShell 不是 `FullLanguage` | 系统策略限制了 PowerShell，需要管理员调整 AppLocker/WDAC 策略 |
+
+### Linux：手动清理升级前的任务
+
+当前版本会给每个 Linux 任务分配一个清理令牌，用来找回已经脱离进程树的后代进程。升级前创建的任务没有这个令牌：如果它的 worker 意外退出，服务无法确认是否还有残留进程，就会一直保持“停止未确认”并占用目录。这是有意的保守设计，需要人工确认后清理。只有 Linux 受影响，Windows 和 macOS 不会出现这种情况。
+
+1. 确认没有正在运行的 agy 进程仍在使用该目录（把 `<工作目录>` 换成任务的实际执行目录）：
+
+   ```bash
+   for p in $(pgrep -f agy); do echo "$p $(readlink /proc/$p/cwd) $(tr '\0' ' ' < /proc/$p/cmdline)"; done
+   ```
+
+   如果有进程的工作目录位于 `<工作目录>` 内，先确认它属于这个旧任务，再执行 `kill <PID>`。几秒后仍未退出的，再用 `kill -9 <PID>`。
+
+2. 删除该任务的目录占用记录和任务记录（把 `<taskId>` 换成实际的任务 ID；设置过 `ANTIGRAVITY_MCP_STATE_HOME` 时，把 `~` 换成该目录）：
+
+   ```bash
+   grep -l '"taskId":"<taskId>"' ~/.gemini/antigravity-mcp-leases/*.json | xargs -r rm --
+   rm -f ~/.gemini/antigravity-mcp-jobs-v1/<taskId>.*.json
+   ```
+
+清理后，该目录可以重新提交任务，再查询这个旧 `taskId` 会返回 `TASK_NOT_FOUND`。已经产生的文件改动和会话记录都会保留；需要续接时，用原 `conversationId` 和原工作目录。
 
 ## 更新
 
@@ -324,6 +347,12 @@ npm run check
 | 任一组启动失败、非零退出、结果缺失或触发 15 分钟实验硬期限 | 实验受其他失败影响，不能归因于 `--print-timeout` | 保留原始报告并核查失败原因，不自动重跑或切换模型 |
 
 以上是结果解读规则，不代表已经完成真实实验。T6 仅提供实验脚本和决策依据；生产执行器的 `--print-timeout 0` 保持原值，后续调整须有人工验证结果及明确授权。
+
+**已核实的结论（agy 1.3.3）：保持 `0`。**
+
+- `agy --help` 说明 `--print-timeout` 是整个 print 模式运行的总时限（“0 waits until the turn completes”），不是只针对后台任务的等待时限。改成正数后，耗时较长的正常任务会被 agy 自己中途结束。
+- 真实验收中，agy 把要求在前台运行的命令放到了后台，并在 stderr 输出 `root agent idle; waiting up to 30m0s for 1 background task(s)`。可见“最多等待后台任务 30 分钟”是 agy 内部的独立上限，与 `--print-timeout` 无关。
+- 因此不修改这个参数。需要限制单个任务的总时长时，由调用方传 `execution_timeout_minutes`。
 
 协作规范 Skill 位于 [`plugin/skills/antigravity-delegation/SKILL.md`](plugin/skills/antigravity-delegation/SKILL.md)。
 
