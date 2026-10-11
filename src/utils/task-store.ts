@@ -40,6 +40,14 @@ export function saveTask(task: StoredTask): void {
   try { writeJson(taskFile(task.result.taskId!), RecordSchema.parse(task)); }
   catch (error) { throw new Error('TASK_SAVE_FAILED: ' + String(error)); }
 }
+// 记录文件的版本戳；原子替换会改变 inode 和修改时间，未变化时调用方可跳过重新解析。
+export function taskStamp(id: string): string | undefined {
+  try { const stat = fs.statSync(taskFile(id), { bigint: true }); return stat.ino + ':' + stat.size + ':' + stat.mtimeNs; }
+  catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return undefined;
+    throw new Error('TASK_READ_FAILED: ' + String(error));
+  }
+}
 export function readTask(id: string): StoredTask | undefined {
   let bytes: string;
   try { bytes = fs.readFileSync(taskFile(id), 'utf8'); }

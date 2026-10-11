@@ -3,7 +3,7 @@ import { killProcessTree } from './process-killer.js';
 import { releaseWorkspaceLease } from './workspace-lease.js';
 import { logger } from './logger.js';
 import crypto from 'node:crypto';
-import { saveTask, readTask, pruneTasks, requestCancellation, removeTaskInput, type StoredTask } from './task-store.js';
+import { saveTask, readTask, taskStamp, pruneTasks, requestCancellation, removeTaskInput, type StoredTask } from './task-store.js';
 import { identityState, requireSelfIdentity } from './process-identity.js';
 
 export interface TaskRecord extends StoredTask {
@@ -14,6 +14,7 @@ export class TaskTracker {
   private tasks = new Map<string, TaskRecord>();
   private listeners = new Map<string, Set<() => void>>();
   private watchers = new Map<string, ReturnType<typeof setInterval>>();
+  private stamps = new Map<string, string>();
   public create(data: Partial<TaskResult> & { taskId: string; workspaceDir: string }): TaskRecord {
     if (this.get(data.taskId)) throw new Error('TASK_ALREADY_EXISTS');
     const startedAt = Date.now();
@@ -29,10 +30,15 @@ export class TaskTracker {
     if (!/^[a-zA-Z0-9_-]{1,200}$/.test(id)) throw new Error('INVALID_TASK_ID');
     let task = this.tasks.get(id);
     if (!task || task.remote) {
-      const stored = readTask(id);
-      if (!stored) { this.tasks.delete(id); return undefined; }
+      // 远端记录未变化时跳过重复的读取和校验；进程身份仍在下方每次核对。
+      const stamp = taskStamp(id);
       const revision = task?.result.revision;
-      if (task) Object.assign(task, stored); else { task = { ...stored, remote: true }; this.tasks.set(id, task); }
+      if (!task || stamp === undefined || this.stamps.get(id) !== stamp) {
+        const stored = readTask(id);
+        if (!stored) { this.tasks.delete(id); this.stamps.delete(id); return undefined; }
+        if (task) Object.assign(task, stored); else { task = { ...stored, remote: true }; this.tasks.set(id, task); }
+        if (stamp === undefined) this.stamps.delete(id); else this.stamps.set(id, stamp);
+      }
       if (task.result.status === 'RUNNING' && identityState(task.ownerPid, task.ownerCreatedAt, task.heartbeatAt) === 'EXITED') {
         const pending = task.childPids.some(pid => identityState(pid, task!.childCreatedAt?.[pid]) !== 'EXITED');
         const code = pending ? 'PROCESS_TERMINATION_UNCONFIRMED' : 'WORKER_INTERRUPTED';
@@ -82,7 +88,7 @@ export class TaskTracker {
   private prune(): void {
     // 活动任务不能淘汰；完成任务按创建顺序限制缓存，总量通常不超过 100。
     if (this.tasks.size > 100) for (const [id, task] of this.tasks) {
-      if (task.result.status !== 'RUNNING') this.tasks.delete(id);
+      if (task.result.status !== 'RUNNING') { this.tasks.delete(id); this.stamps.delete(id); }
       if (this.tasks.size <= 100) break;
     }
   }
