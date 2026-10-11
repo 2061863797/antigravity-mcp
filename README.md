@@ -87,6 +87,23 @@ AGY_PATH = "C:/Tools/agy/agy.exe"
 
 最低版本 `1.1.15` 根据 [agy 官方 changelog](https://www.antigravity.google/docs/changelog?tab=cli)核实：它修复非 ASCII 的 stream-json 文本，此前版本已经加入 `--effort`、stream-json、禁用斜杠命令和原生额度输出，并修复无头运行忽略 `--mode`。这是文档核查；真实 CLI 的兼容性仍须人工验证。必要时由用户明确设置 `ANTIGRAVITY_SKIP_VERSION_CHECK=1` 跳过预检；默认执行检查，不自动重试、换模型或切换后端。
 
+### 4. 预检（可选）
+
+```powershell
+node "C:\Projects\antigravity-mcp\dist\index.js" --doctor
+```
+
+`--doctor` 只是命令行参数，不注册新的 MCP 工具。它输出 JSON 并在任一检查失败时以退出码 1 结束，检查项为：
+
+| 检查 | 内容 |
+| --- | --- |
+| `agy` | 可执行文件路径及 `--version` 是否满足最低版本（与任务提交使用同一预检） |
+| `config` | `ANTIGRAVITY_CONFIG_PATH` 或默认 `config.json` 能否读取和校验，打印 `defaultModel`、`defaultEffort`；不调用模型验证默认模型是否可用 |
+| `stateDir` | 用户状态目录能否创建、写入和删除探测文件 |
+| `powershell` | 仅 Windows：`$ExecutionContext.SessionState.LanguageMode` 是否为 `FullLanguage`；`ConstrainedLanguage` 会让 `Add-Type` 编译的 Job 启动器失败 |
+
+预检会运行一次 `agy --version`，不启动模型、不创建任务或会话。需要与 MCP 客户端相同的环境时，带上客户端配置中的 `AGY_PATH`、`ANTIGRAVITY_CONFIG_PATH` 等变量运行。
+
 ## 使用示例
 
 以下是 MCP 工具调用参数；实际由父 agent 或客户端提交。
