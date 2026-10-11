@@ -32,10 +32,14 @@ async function findDescendantPids(rootPid: number): Promise<number[]> {
 export async function findPidsByEnvToken(token: string): Promise<number[]> {
   if (process.platform !== 'linux') return [];
   const needle = Buffer.from('AGY_MCP_JOB_TOKEN=' + token + '\0');
+  const delimited = Buffer.concat([Buffer.from([0]), needle]);
   const found: number[] = [];
   for (const name of await fs.promises.readdir('/proc').catch(() => [] as string[])) {
     if (!/^[1-9][0-9]*$/.test(name) || Number(name) === process.pid) continue;
-    try { if ((await fs.promises.readFile('/proc/' + name + '/environ')).includes(needle)) found.push(Number(name)); } catch { /* 已退出或无权读取 */ }
+    try {
+      const environment = await fs.promises.readFile('/proc/' + name + '/environ');
+      if (environment.subarray(0, needle.length).equals(needle) || environment.includes(delimited)) found.push(Number(name));
+    } catch { /* 已退出或无权读取 */ }
   }
   return found;
 }

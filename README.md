@@ -249,7 +249,7 @@ powershell -ExecutionPolicy Bypass -File .\install.ps1
 - **进程清理**：
   - Windows：用 Job Object 清理整个进程树，并核对进程身份，避免误杀复用了同一 PID 的进程。
   - Linux/macOS：先发 SIGTERM，宽限 5 秒后再强制结束。
-  - 只有 Linux 能找回已脱离进程树的后代进程；worker 本身崩溃后的自动清理只在 Windows 上支持。
+  - 只有 Linux 能找回已脱离进程树的后代进程；按完整环境变量条目匹配本任务的清理令牌，其他变量名或变量值中的相同文本不会被选中。worker 本身崩溃后的自动清理只在 Windows 上支持。
 - **识别假成功**：agy 退出时如果终止了仍在运行的后台命令，结果标为 `CLI_BACKGROUND_ABORTED`，并把已有回答作为部分结果保留。
 
 **不提供的功能**：HTTP/SSE 传输、工作区隔离或备份、自动回滚、自动重试、自动换模型、异步任务完成后主动唤醒 agent、运行中回答 agy 的交互提问。
