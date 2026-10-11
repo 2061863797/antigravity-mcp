@@ -1,12 +1,12 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
-import os from 'node:os';
+import { testTempRoot } from './helpers/temp-root.js';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 // 配置在模块加载时读取，所以先写配置再导入执行器。
-const root = fs.mkdtempSync(path.join(fs.realpathSync.native(os.tmpdir()), 'agy-approve-'));
+const root = fs.mkdtempSync(path.join(testTempRoot(), 'agy-approve-'));
 const config = path.join(root, 'config.json');
 fs.writeFileSync(config, JSON.stringify({ defaultModel: 'gemini-3.8-flash-high', defaultEffort: 'high', defaultAutoApprove: false }));
 process.env.ANTIGRAVITY_CONFIG_PATH = config; process.env.ANTIGRAVITY_MCP_STATE_HOME = path.join(root, 'state');

@@ -1,12 +1,15 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
-import os from 'node:os';
+import { testTempRoot } from './helpers/temp-root.js';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 
-const root = fs.mkdtempSync(path.join(fs.realpathSync.native(os.tmpdir()), 'agy-change-'));
+const root = fs.mkdtempSync(path.join(testTempRoot(), 'agy-change-'));
+// 项目内的夹具不能向上发现本仓库，否则非 Git 工作区用例会失去意义。
+const previousCeiling = process.env.GIT_CEILING_DIRECTORIES;
+process.env.GIT_CEILING_DIRECTORIES = root;
 process.env.ANTIGRAVITY_MCP_STATE_HOME = path.join(root, 'state');
 const { executeAgy } = await import('../src/agy-executor.js');
 const { taskTracker } = await import('../src/utils/task-tracker.js');
@@ -14,7 +17,11 @@ const { compareWorkspace, snapshotWorkspace } = await import('../src/utils/works
 const cli = fileURLToPath(new URL('./fixtures/fake-agy.mjs', import.meta.url));
 let gitMissing: string | false = false;
 try { execFileSync('git', ['--version'], { stdio: 'ignore', windowsHide: true }); } catch { gitMissing = '需要 git 可执行文件'; }
-test.after(async () => { await taskTracker.shutdownAll(); fs.rmSync(root, { recursive: true, force: true }); });
+test.after(async () => {
+  await taskTracker.shutdownAll(); fs.rmSync(root, { recursive: true, force: true });
+  if (previousCeiling === undefined) delete process.env.GIT_CEILING_DIRECTORIES;
+  else process.env.GIT_CEILING_DIRECTORIES = previousCeiling;
+});
 
 const git = (cwd: string, ...args: string[]) => execFileSync('git', ['-c', 'user.name=test', '-c', 'user.email=test@example.invalid', ...args], { cwd, stdio: 'ignore', windowsHide: true });
 function repository(name: string): string {
@@ -109,6 +116,7 @@ test('link snapshots compare link targets without opening the external file on a
 
 test('non-git directories and code tasks omit the workspace change fields', { skip: gitMissing }, async () => {
   const plain = path.join(root, 'plain'); fs.mkdirSync(plain);
+  assert.throws(() => git(plain, 'rev-parse', '--show-toplevel'), 'plain fixture must be outside any Git repository');
   const ask = await run(plain, { writes: { 'a.txt': 'edited' } });
   assert.equal(ask.status, 'SUCCESS'); assert(!('workspaceChanged' in ask)); assert(!('workspaceChangeSummary' in ask));
   const code = await run(repository('code'), { writes: { 'a.txt': 'edited' } }, false);

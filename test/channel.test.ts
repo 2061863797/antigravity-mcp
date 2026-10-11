@@ -7,9 +7,10 @@ import crypto from 'node:crypto';
 import { spawn, execFileSync } from 'node:child_process';
 import { createRequire } from 'node:module';
 import { fileURLToPath, pathToFileURL } from 'node:url';
+import { testTempRoot } from './helpers/temp-root.js';
 
 // Windows CI 的 TEMP 可能是 8.3 短路径；预期值使用与执行器一致的实际路径。
-const temporaryRoot = fs.realpathSync.native(os.tmpdir()), suite = fs.mkdtempSync(path.join(temporaryRoot, 'antigravity-channel-'));
+const temporaryRoot = testTempRoot(), suite = fs.mkdtempSync(path.join(temporaryRoot, 'antigravity-channel-'));
 const home = path.join(suite, 'home'); fs.mkdirSync(home);
 (os as unknown as { homedir: () => string }).homedir = () => home;
 const starts = path.join(suite, 'starts'); process.env.TEST_MODEL_STARTS = starts;

@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
-import os from 'node:os';
+import { testTempRoot } from './helpers/temp-root.js';
 import path from 'node:path';
 import childProcess from 'node:child_process';
 import { fileURLToPath } from 'node:url';
@@ -13,7 +13,7 @@ import { queryNativeQuota } from '../src/utils/native-quota.js';
 import { acquireWorkspaceLease, releaseWorkspaceLease } from '../src/utils/workspace-lease.js';
 
 async function fixture(action: (directory: string, cli: string, calls: () => number) => Promise<void>) {
-  const temporaryRoot = fs.realpathSync.native(os.tmpdir());
+  const temporaryRoot = testTempRoot();
   const directory = fs.mkdtempSync(path.join(temporaryRoot, 'agy-version-'));
   const cli = path.join(directory, 'fake-agy.mjs'), counter = path.join(directory, 'versions');
   fs.copyFileSync(fileURLToPath(new URL('./fixtures/fake-agy.mjs', import.meta.url)), cli);

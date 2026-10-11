@@ -105,13 +105,11 @@ export function validateWorkspaceSafety(dirPath: string): { safe: boolean; reaso
     return { safe: false, reason: `Operating directly in the home directory (${normalized}) is prohibited; choose a project subdirectory.` };
   }
 
-  // Check 3: POSIX system directories. The temporary directory subtree stays allowed (macOS keeps it under /private/var).
+  // Check 3: POSIX system directories, including temporary directories inside them.
   if (process.platform !== 'win32') {
     const inside = (parent: string) => normalized === parent || normalized.startsWith(parent + '/');
-    const temporary = real(os.tmpdir());
     const blocked = POSIX_SYSTEM_DIRECTORIES.find(inside);
-    const temporaryAllowed = !POSIX_SYSTEM_DIRECTORIES.includes(temporary) && normalized.startsWith(temporary + '/');
-    if (blocked && !temporaryAllowed) {
+    if (blocked) {
       return { safe: false, reason: `Target workspace (${normalized}) is inside system directory ${blocked} and cannot be modified.` };
     }
   }

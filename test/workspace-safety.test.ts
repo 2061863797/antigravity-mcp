@@ -3,8 +3,10 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { testTempRoot } from './helpers/temp-root.js';
 
-const root = fs.mkdtempSync(path.join(fs.realpathSync.native(os.tmpdir()), 'agy-safety-'));
+const root = fs.mkdtempSync(path.join(testTempRoot(), 'agy-safety-'));
 const home = path.join(root, 'home'), project = path.join(home, 'projects', 'demo');
 fs.mkdirSync(project, { recursive: true });
 // 用临时目录代替真实家目录，避免测试依赖或触碰用户文件。
@@ -27,6 +29,37 @@ test('a link that resolves to the home directory is rejected', () => {
   fs.symlinkSync(home, link, process.platform === 'win32' ? 'junction' : 'dir');
   assert.equal(validateWorkspaceSafety(link).safe, false);
   assert.equal(validateWorkspaceSafety(path.join(link, 'projects', 'demo')).safe, true);
+});
+
+test('POSIX system directories stay blocked when the temporary directory is inside them', t => {
+  const platform = Object.getOwnPropertyDescriptor(process, 'platform')!;
+  const resolve = path.posix.resolve, parse = path.posix.parse;
+  let temporary = '/private/var/folders/fixture/T';
+  try {
+    Object.defineProperty(process, 'platform', { ...platform, value: 'darwin' });
+    t.mock.method(path, 'resolve', resolve); t.mock.method(path, 'parse', parse);
+    t.mock.method(fs, 'existsSync', () => false);
+    t.mock.method(fs.realpathSync, 'native', ((value: fs.PathLike) => resolve(String(value))) as typeof fs.realpathSync.native);
+    t.mock.method(os, 'homedir', () => '/Users/fixture');
+    t.mock.method(os, 'tmpdir', () => temporary);
+    for (const directory of POSIX_SYSTEM_DIRECTORIES) {
+      temporary = directory + '/local/tmp';
+      const result = validateWorkspaceSafety(temporary + '/project');
+      assert.equal(result.safe, false, temporary + '/project must not be exempted');
+      assert(result.reason?.includes('system directory ' + directory), result.reason);
+    }
+    temporary = '/private/var/folders/fixture/T';
+    assert.equal(validateWorkspaceSafety(temporary + '/project').safe, false);
+    assert.equal(validateWorkspaceSafety('/tmp/project').safe, true);
+    assert.equal(validateWorkspaceSafety('/usr-local/project').safe, true);
+  } finally { Object.defineProperty(process, 'platform', platform); }
+});
+
+test('test workspaces use a project directory when the system temporary root is unsafe', t => {
+  t.mock.method(os, 'tmpdir', () => path.parse(process.cwd()).root);
+  const temporary = testTempRoot();
+  assert.equal(temporary, fs.realpathSync.native(fileURLToPath(new URL('../.verify-out/test-workspaces/', import.meta.url))));
+  assert.equal(validateWorkspaceSafety(temporary).safe, true);
 });
 
 const posix = process.platform === 'win32' ? 'POSIX 系统目录规则不适用于 Windows 路径' : false;

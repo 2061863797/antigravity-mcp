@@ -1,11 +1,11 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
-import os from 'node:os';
+import { testTempRoot } from './helpers/temp-root.js';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-const root = fs.mkdtempSync(path.join(fs.realpathSync.native(os.tmpdir()), 'agy-heartbeat-'));
+const root = fs.mkdtempSync(path.join(testTempRoot(), 'agy-heartbeat-'));
 process.env.ANTIGRAVITY_MCP_STATE_HOME = path.join(root, 'state');
 const { executeAgy, PROGRESS_HEARTBEAT_MS } = await import('../src/agy-executor.js');
 const { taskTracker } = await import('../src/utils/task-tracker.js');
