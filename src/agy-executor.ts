@@ -136,9 +136,21 @@ async function launchWorker(task: TaskRecord, input: AgyExecuteOptions): Promise
 }
 
 export async function executeAgy(input: AgyExecuteOptions, workerTaskId?: string): Promise<TaskResult> {
-  let options: AgyExecuteOptions, source: string, workspace: string, model: string, effort: string, args: string[], executable: string;
-  let failureStage: NonNullable<TaskResult['failureStage']> = 'INPUT';
   const taskId = workerTaskId ?? 'task_' + Date.now() + '_' + crypto.randomUUID().slice(0, 8);
+  const prepared = prepareExecution(input);
+  if ('schemaVersion' in prepared) return prepared;
+  const task = await claimTask(prepared, taskId, workerTaskId);
+  if ('schemaVersion' in task) return task;
+  return workerTaskId ? runTask(task, prepared) : submitTask(task, prepared);
+}
+
+interface PreparedExecution {
+  options: AgyExecuteOptions; source: string; workspace: string; model: string; effort: string; args: string[]; executable: string;
+}
+// 阶段一：校验输入、解析会话与目录、确定模型和命令行；失败时不创建任务。
+function prepareExecution(input: AgyExecuteOptions): PreparedExecution | TaskResult {
+  let options: AgyExecuteOptions, source: string, workspace: string, model: string, effort: string, args: string[], executable: string;
+  const failureStage: NonNullable<TaskResult['failureStage']> = 'INPUT';
   try {
     options = { ...input, ...InputSchema.parse(input) };
     if (options.requestSignal?.aborted) throw new Error('CANCELLED');
@@ -156,7 +168,13 @@ export async function executeAgy(input: AgyExecuteOptions, workerTaskId?: string
     return normalizeResult({ status: code === 'CANCELLED' ? 'CANCELLED' : 'ERROR', executionStatus: code, errorCode: code,
       errorMessage: String(error), failureStage, response: String(error), workspaceDir: input.workspaceDir ?? null, conversationId: input.conversationId ?? null });
   }
-  failureStage = 'PREPARING';
+  return { options, source, workspace, model, effort, args, executable };
+}
+
+// 阶段二：提交方先做版本预检再获取租约并登记任务；worker 接管已登记任务的租约。
+async function claimTask({ options, source, workspace, model, effort, executable }: PreparedExecution, taskId: string,
+  workerTaskId?: string): Promise<TaskRecord | TaskResult> {
+  const failureStage: NonNullable<TaskResult['failureStage']> = 'PREPARING';
   let leased = false, task: TaskRecord;
   try {
     // 提交方在获取租约前完成预检；worker 继续使用已经通过预检的同一命令。
@@ -183,24 +201,34 @@ export async function executeAgy(input: AgyExecuteOptions, workerTaskId?: string
     return normalizeResult({ status: code === 'CANCELLED' ? 'CANCELLED' : 'ERROR', executionStatus: code, errorCode: code, errorMessage: String(error), failureStage,
       response: String(error), workspaceDir: source, executionWorkspaceDir: workspace, conversationId: options.conversationId ?? null });
   }
-  if (!workerTaskId) {
-    const notifyProgress = requestProgress(options);
-    await notifyProgress(task.result);
-    try { await launchWorker(task, { ...options, model, effort: effort as AgyExecuteOptions['effort'], cliPath: executable }); }
-    catch (error) {
-      if (task.workerPid && identityState(task.workerPid, task.workerCreatedAt) !== 'EXITED') {
-        task.result.errorCode = 'WORKER_START_UNCONFIRMED'; task.result.errorMessage = String(error);
-        await notifyProgress(task.result);
-        return taskTracker.report(task);
-      }
-      releaseWorkspaceLease(taskId);
-      const code = failureCode(error); taskTracker.update(task, { status: 'ERROR', executionStatus: code, errorCode: code,
-        errorMessage: String(error), stderrTail: String(error).slice(-8192), failureStage: 'PREPARING' }); taskTracker.persist(task, true);
+  return task;
+}
+
+// 阶段三（提交方）：启动独立 worker，按请求方式返回任务 ID 或等待结果。
+async function submitTask(task: TaskRecord, { options, model, effort, executable }: PreparedExecution): Promise<TaskResult> {
+  const taskId = task.result.taskId!;
+  const notifyProgress = requestProgress(options);
+  await notifyProgress(task.result);
+  try { await launchWorker(task, { ...options, model, effort: effort as AgyExecuteOptions['effort'], cliPath: executable }); }
+  catch (error) {
+    if (task.workerPid && identityState(task.workerPid, task.workerCreatedAt) !== 'EXITED') {
+      task.result.errorCode = 'WORKER_START_UNCONFIRMED'; task.result.errorMessage = String(error);
       await notifyProgress(task.result);
       return taskTracker.report(task);
     }
-    return waitForTask(task, options, notifyProgress);
+    releaseWorkspaceLease(taskId);
+    const code = failureCode(error); taskTracker.update(task, { status: 'ERROR', executionStatus: code, errorCode: code,
+      errorMessage: String(error), stderrTail: String(error).slice(-8192), failureStage: 'PREPARING' }); taskTracker.persist(task, true);
+    await notifyProgress(task.result);
+    return taskTracker.report(task);
   }
+  return waitForTask(task, options, notifyProgress);
+}
+
+// 阶段三（worker）：运行 agy、解析事件流、判定结果并在确认停止后释放租约。
+function runTask(task: TaskRecord, { options, workspace, model, effort, args, executable }: PreparedExecution): Promise<TaskResult> | TaskResult {
+  const taskId = task.result.taskId!;
+  let failureStage: NonNullable<TaskResult['failureStage']> = 'PREPARING';
   const deadlineAt = options.executionTimeoutMs === undefined ? undefined : task.startedAt + options.executionTimeoutMs;
   const deadlineTimer = deadlineAt === undefined ? undefined : setTimeout(() => task.abortController!.abort('TIMEOUT'), Math.max(1, deadlineAt - Date.now()));
   const active = { signal: task.abortController!.signal, deadlineAt };
