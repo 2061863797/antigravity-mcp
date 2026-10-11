@@ -10,8 +10,7 @@
   "files": [
     "dist",
     "config.json",
-    "README.md",
-    "chatgpt_desktop_config.example.json"
+    "README.md"
   ],
   "engines": {
     "node": ">=20"
