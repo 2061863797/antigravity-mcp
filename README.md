@@ -220,6 +220,7 @@ worker 意外崩溃后的自动后代清理目前仅 Windows 支持。POSIX 没�
 - 直接在真实工作目录执行。同目录及父子目录互斥；不同目录可并行。此租约不阻止用户、编辑器或其他软件修改文件。
 - **默认自动审批会批准命令和文件写入。** MCP 使用原生 `--dangerously-skip-permissions` 并传入 `--sandbox`；需要本机权限和白名单时传 `auto_approve: false`。审批不能解决 OS 权限、文件占用或沙箱限制。[agy headless 权限](https://antigravity.google/docs/cli/headless/#permissions-in-headless-mode)
 - 执行层只解析官方 stream-json / NDJSON。无合法最终结果、损坏 JSON、上游错误或非零退出不能仅因模型说“完成”而成功。未知事件忽略，不触发重跑。
+- agy 无头运行进入空闲时若仍有后台 shell 任务，会在退出时终止它们，退出码和最终状态仍为成功。stderr 中同时出现“空闲并等待后台任务”与“退出时终止后台任务”两类行时，结果改为 `CLI_BACKGROUND_ABORTED`，保留已产生的 `response` 作为部分结果；只出现其中一类时不判定。判定措辞来自 agy 1.2.x 的公开实测，须在真实 agy 上人工确认。
 - `recentTools` 最多五次操作；工具 DONE 只表示结束。`latestText` 是当前响应步骤最后 4,000 字符，完整最终报告在 `response`。
 - `stderrTail` 保留真正末尾最多 8,192 字符。原始 stdout 默认不落盘；调试日志达到上限会标记截断，解析继续消费完整输入。
 - `usage` 保留上游原始值，统计范围为 session 或 unknown；不计算费用或将续接的累计用量相加。本地耗时和上游时长分别返回。

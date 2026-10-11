@@ -291,6 +291,20 @@ test('startup errors with no CLI session are upstream failures; successful permi
   assert.equal(completed.status, 'SUCCESS'); assert.equal(completed.cliError, null); assert.match(completed.stderrTail, /permission denied/);
   assert(!('verification' in completed));
 });
+test('background tasks terminated on exit turn a zero-exit success into a partial failure only when both lines appear', async () => {
+  const idle = 'root agent idle; waiting up to 5s for 2 background task(s)', terminating = 'Terminating 2 background task(s) on exit';
+  const aborted = await run(fixture('background-aborted'), { stderr: idle + '\n' + terminating, response: '正在运行测试…' });
+  assert.equal(aborted.status, 'ERROR'); assert.equal(aborted.errorCode, 'CLI_BACKGROUND_ABORTED'); assert.equal(aborted.failureStage, 'CLI');
+  assert.equal(aborted.response, '正在运行测试…'); assert.equal(aborted.processExitCode, 0); assert.equal(aborted.cliStatus, 'SUCCESS');
+  assert.match(aborted.errorMessage!, /部分结果/); assert.match(aborted.nextAction!, /前台/); assert.match(aborted.nextAction!, /不自动重跑/);
+  const idleOnly = await run(fixture('background-idle-only'), { stderr: idle, response: '完整答案' });
+  assert.equal(idleOnly.status, 'SUCCESS'); assert.equal(idleOnly.errorCode, null); assert.equal(idleOnly.response, '完整答案');
+  const unrelated = await run(fixture('background-unrelated'), { stderr: 'loading workspace\nterminating session', response: '完整答案' });
+  assert.equal(unrelated.status, 'SUCCESS'); assert.equal(unrelated.errorCode, null);
+  const { detectBackgroundAbort } = await import('../src/agy-executor.js');
+  assert.equal(detectBackgroundAbort(terminating), false);
+  assert.equal(detectBackgroundAbort(idle.toUpperCase() + '\r\n' + terminating), true);
+});
 test('analysis uses the original directory without copying; its no-write instruction is not enforcement', async () => {
   const workspace = fixture('direct-review'); write(workspace, 'a.txt', 'source'); write(workspace, 'node_modules/local.txt', 'dependency');
   const result = await run(workspace, { writes: { 'a.txt': 'changed' } }, { analysis: true });

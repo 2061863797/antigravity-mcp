@@ -60,6 +60,12 @@ export function validateCommandLine(executable: string, args: string[], platform
   if ([executable, ...args].some(value => value.includes('\0'))) throw new Error('INVALID_ARGUMENT: NUL characters are not supported');
   if (platform === 'win32' && formatCommandLine(executable, args).length > 30000) throw new Error('INPUT_TOO_LARGE: escaped Windows command line exceeds 30000 characters');
 }
+// agy 无头空闲时会等待并在退出时终止后台任务，退出码仍为 0。两类行同时出现才判定，偏向精确。
+export function detectBackgroundAbort(stderr: string): boolean {
+  const lines = stderr.toLowerCase().split(/\r?\n/);
+  return lines.some(line => line.includes('idle') && line.includes('background task'))
+    && lines.some(line => line.includes('terminating') && line.includes('background task') && line.includes('on exit'));
+}
 const failureCode = (error: unknown) => /^(?:[A-Z][A-Z_]+)(?=:|$)/.exec(String(error instanceof Error ? error.message : error))?.[0] ?? 'EXECUTION_FAILED';
 function requestProgress(options: AgyExecuteOptions): (result: TaskResult) => Promise<void> {
   let previous: string | undefined, sequence = -1, pending = Promise.resolve();
@@ -290,6 +296,7 @@ export async function executeAgy(input: AgyExecuteOptions, workerTaskId?: string
       }
       if (envelope.error?.trim()) throw new Error('CLI_ERROR: ' + envelope.error);
       if (output.exitCode !== 0) throw new Error('CLI_EXIT_FAILED: ' + output.exitCode);
+      if (detectBackgroundAbort(output.stderr)) throw new Error('CLI_BACKGROUND_ABORTED: agy 退出时终止了仍在运行的后台任务；response 只是部分结果，不代表任务完成。');
       checkAbort(active);
       outcome = { status: 'SUCCESS', executionStatus: 'SUCCESS', errorCode: null };
     } catch (error) {
