@@ -313,3 +313,5 @@ npm run check
 ## 许可证
 
 [MIT](LICENSE)。本项目是独立工具，不隶属于 Google、OpenAI 或 Antigravity。
+
+插件 ZIP 的根目录、插件目录和运行时目录均保留本项目的版权及 MIT 许可文本；运行时依赖的许可证也随包保留。

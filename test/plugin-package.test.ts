@@ -49,12 +49,15 @@ test('Windows plugin ZIP relocates with metadata, production dependencies and or
   assert(listing.includes(`${name}/.claude-plugin/marketplace.json`));
   assert(listing.includes(`${name}/plugins/antigravity-mcp/.claude-plugin/plugin.json`));
   assert(listing.includes(`${name}/install.ps1`));
+  assert(listing.includes(`${name}/LICENSE`), 'ZIP root LICENSE missing');
+  assert(listing.includes(`${name}/plugins/antigravity-mcp/LICENSE`), 'installed plugin LICENSE missing');
+  assert(listing.includes(`${name}/plugins/antigravity-mcp/runtime/LICENSE`), 'runtime LICENSE missing');
   assert(listing.includes(`${name}/plugins/antigravity-mcp/runtime/dist/task-worker.js`));
   assert(listing.every(entry => entry.startsWith(name + '/')));
   // 仅运行代码与依赖可进入 runtime，不夹带开发源码、用户状态或诊断目录。
   const prefix = `${name}/plugins/antigravity-mcp/runtime/`;
   for (const entry of listing.filter(entry => entry.startsWith(prefix) && entry !== prefix)) {
-    assert(['package.json', 'config.json', 'dist', 'node_modules'].includes(entry.slice(prefix.length).split('/')[0]), entry);
+    assert(['package.json', 'config.json', 'LICENSE', 'dist', 'node_modules'].includes(entry.slice(prefix.length).split('/')[0]), entry);
   }
   for (const dev of ['tsx', 'typescript', 'esbuild', '@esbuild']) {
     assert(!listing.some(entry => entry.startsWith(`${prefix}node_modules/${dev}/`)), dev);
@@ -62,6 +65,10 @@ test('Windows plugin ZIP relocates with metadata, production dependencies and or
   assert(!listing.some(entry => /\/(audit|\.verify-out|\.gemini|\.codegraph|logs|\.env)(\/|$)/.test(entry)));
   execute(tar, ['-xf', `${name}.zip`], relocated);
   const directory = path.join(relocated, name), plugin = path.join(directory, 'plugins/antigravity-mcp');
+  const license = fs.readFileSync(path.join(root, 'LICENSE'));
+  for (const target of [directory, plugin, path.join(plugin, 'runtime')]) {
+    assert.deepEqual(fs.readFileSync(path.join(target, 'LICENSE')), license, 'each distributable scope retains the original license text');
+  }
   const marketplace = read(path.join(directory, '.agents/plugins/marketplace.json'));
   const manifest = read(path.join(plugin, 'plugin.json'));
   assert.equal(path.resolve(directory, marketplace.plugins[0].source.path), plugin);
@@ -183,7 +190,7 @@ test('Windows plugin ZIP relocates with metadata, production dependencies and or
       assert.equal(complete.response, code.response); assert.equal(complete.status, 'SUCCESS');
       assert.equal(fs.readFileSync(starts, 'utf8').trim().split('\n').length, 4, '重连和查询不重跑模型');
       assert(fs.readdirSync(path.join(home, '.gemini/antigravity-mcp-jobs-v1')).some(file => file.endsWith('.task.json')));
-      assert.deepEqual(fs.readdirSync(plugin).sort(), ['.claude-plugin', 'mcp.json', 'plugin.json', 'runtime', 'skills']);
+      assert.deepEqual(fs.readdirSync(plugin).sort(), ['.claude-plugin', 'LICENSE', 'mcp.json', 'plugin.json', 'runtime', 'skills']);
       assert.deepEqual(fs.readdirSync(workspace).sort(), ['a.txt', 'descendant.pid', 'kept.txt']);
     } finally {
       if (activeId) await call(client, 'antigravity_cancel_task', { task_id: activeId });

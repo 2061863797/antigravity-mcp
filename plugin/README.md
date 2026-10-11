@@ -114,11 +114,13 @@ claude plugin install antigravity-mcp@antigravity-local
 
 ```text
 install.ps1                         一键安装脚本
+LICENSE                            本项目版权和 MIT 许可文本
 .agents/plugins/marketplace.json    Codex 插件市场清单
 .claude-plugin/marketplace.json     Claude Code 插件市场清单
 plugins/antigravity-mcp/
+  LICENSE                          安装后的插件保留本项目许可文本
   plugin.json, mcp.json             Codex 插件清单
   .claude-plugin/plugin.json        Claude Code 插件清单
   skills/antigravity-delegation/    协作 Skill（两个客户端共用）
-  runtime/                          MCP 服务及其依赖（两个客户端共用）
+  runtime/                          MCP 服务、LICENSE 及其依赖（两个客户端共用）
 ```

@@ -48,7 +48,7 @@ function npmCli() {
   return found;
 }
 
-for (const file of ['dist/index.js', 'dist/task-worker.js', 'config.json', 'plugin/skills/antigravity-delegation/SKILL.md', 'plugin/install.ps1']) {
+for (const file of ['dist/index.js', 'dist/task-worker.js', 'config.json', 'LICENSE', 'plugin/skills/antigravity-delegation/SKILL.md', 'plugin/install.ps1']) {
   if (!fs.existsSync(path.join(root, file))) throw new Error(`缺少 ${file}；先构建并准备插件。`);
 }
 const manifest = JSON.parse(fs.readFileSync(path.join(root, 'plugin/plugin.json'), 'utf8'));
@@ -74,7 +74,9 @@ try {
   const runtime = path.join(plugin, 'runtime');
   fs.mkdirSync(runtime, { recursive: true });
   for (const entry of ['plugin.json', 'mcp.json', 'skills']) copy(path.join(root, 'plugin', entry), path.join(plugin, entry));
-  for (const entry of ['config.json', 'dist', 'node_modules']) copy(path.join(npmPackage, entry), path.join(runtime, entry));
+  for (const entry of ['config.json', 'LICENSE', 'dist', 'node_modules']) copy(path.join(npmPackage, entry), path.join(runtime, entry));
+  copy(path.join(root, 'LICENSE'), path.join(plugin, 'LICENSE'));
+  copy(path.join(root, 'LICENSE'), path.join(bundle, 'LICENSE'));
   const { name: runtimeName, version, description, type, main, engines, license, dependencies } = pkg;
   fs.writeFileSync(path.join(runtime, 'package.json'), JSON.stringify({ name: runtimeName, version, description,
     type, main, engines, license, dependencies }, null, 2) + '\n');
