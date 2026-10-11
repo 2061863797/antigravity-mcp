@@ -264,6 +264,8 @@ npm run check
 
 安装、构建或类型检查失败可能导致测试未运行；此时测试数量记为“未取得”，缺失日志会给出警告。基线采集可能包含尚未修复的失败，应按提交哈希、平台与 Node 版本记录通过、失败、跳过数量及失败用例名，再与后续任务对比。验证报告分别列出 Windows 本机实测、CI 实测和未验证项；本机构建或类型检查通过不能代替 Linux 运行结果。
 
+`scripts/live-print-timeout.mjs` 是 `--print-timeout` 取值的实验脚本：让 agent 启动约 90 秒的后台命令，分别以 `0` 和正数期限（默认 `60s`）直接运行 agy，记录退出码、最终状态、耗时、后台任务是否被终止及 stderr 尾部，报告写入 `audit/`。它调用真实模型，同样只在授权后设置 `ANTIGRAVITY_LIVE_TESTS=1` 手动运行；拿到实测结果前执行器继续固定传 `--print-timeout 0`。
+
 Windows 测试需要正常的路径解析、原子文件更新、CIM 和子进程终止权限。真实 agy 验收脚本为 `scripts/live-cli-compat.mjs`，只有单独授权并设置 `ANTIGRAVITY_LIVE_TESTS=1` 后才能运行；程序化 stdio 测试不能替代真实客户端或真实模型验收。
 
 Windows worker 启动失败时，错误诊断保留系统的 `code`、`signal`、`killed`，以及 `AGY_MCP_WORKER_STAGE` 标记，用于区分 PowerShell 初始化、CIM 创建和进程身份读取等阶段。启动期限仍为 10 秒，失败不会自动重试；成功结果不增加诊断字段。
