@@ -36,11 +36,14 @@ test('defaultAutoApprove is optional, defaults to true and must be boolean', () 
 test('an omitted approval uses the configured default; an explicit value wins', async () => {
   const omitted = workspace('omitted'), capture = path.join(root, 'omitted.json');
   const defaulted = await executeAgy({ prompt: 'FIXTURE:' + JSON.stringify({ capture }), workspaceDir: omitted, cliPath: process.execPath, cliArgsPrefix: [cli], requestWaitTimeoutMs: 20000 });
-  assert.equal(defaulted.status, 'SUCCESS'); assert.equal(defaulted.autoApprove, false);
+  const diagnostic = (result: typeof defaulted) => JSON.stringify({ errorCode: result.errorCode, failureStage: result.failureStage,
+    errorMessage: result.errorMessage, stderrTail: result.stderrTail.slice(-2000) });
+  assert.equal(defaulted.status, 'SUCCESS', diagnostic(defaulted)); assert.equal(defaulted.autoApprove, false);
   assert(!capturedArgs(capture).includes('--dangerously-skip-permissions'));
   const explicitCapture = path.join(root, 'explicit.json');
   const explicit = await executeAgy({ prompt: 'FIXTURE:' + JSON.stringify({ capture: explicitCapture }), workspaceDir: workspace('explicit'), autoApprove: true,
     cliPath: process.execPath, cliArgsPrefix: [cli], requestWaitTimeoutMs: 20000 });
+  assert.equal(explicit.status, 'SUCCESS', diagnostic(explicit));
   assert.equal(explicit.autoApprove, true); assert(capturedArgs(explicitCapture).includes('--dangerously-skip-permissions'));
 });
 
