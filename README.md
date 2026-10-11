@@ -1,6 +1,6 @@
 # Antigravity MCP
 
-通过 MCP 调用本机 Antigravity CLI（`agy`），让 Codex、Claude Code 等父 agent 委派分析、编码和复核任务。
+通过 MCP 调用本机 Antigravity CLI（`agy`），让任意支持 MCP 的父 agent 委派分析、编码和复核任务。
 
 MCP 负责启动 agy、交付进度与结果、管理后台任务和停止进程；父 agent 负责检查文件、运行测试与验收成果。项目直接使用 agy，不调用独立的 Gemini API。
 
@@ -27,7 +27,7 @@ MCP 负责启动 agy、交付进度与结果、管理后台任务和停止进程
 
 - **Node.js 20+** 和 npm。
 - 已安装并登录的 **agy CLI 1.1.15 或更高版本**，支持官方 `stream-json` 输出。
-- 支持本地 stdio 的 MCP 客户端，例如 Codex 或 Claude Code。
+- 任意支持本地 stdio 传输的 MCP 客户端。
 - Windows 是主要验证平台；Windows worker 需要 PowerShell 和 CIM/WMI 可用。其他平台未完成同等实机验收。
 
 先确认以下命令可用，并按 [agy 官方文档](https://antigravity.google/docs/cli/headless/)完成安装与登录：
@@ -52,15 +52,23 @@ npm run build
 
 此仓库按源码分发，不需要全局安装 `antigravity-mcp`。构建后由 MCP 客户端启动 `dist/index.js`；不要把 `npm start` 当成常驻 HTTP 服务。
 
-### 2. 配置 Codex
+### 2. 接入 MCP 客户端
 
-假设仓库位于 `C:\Projects\antigravity-mcp`，可以通过 Codex CLI 添加：
+本服务是标准的本地 stdio MCP 服务，不依赖特定客户端或 agent。任何支持 stdio 传输的 MCP 客户端都按同一方式接入：启动命令为 `node`，参数为构建产物 `dist/index.js` 的绝对路径，可选环境变量见下一节。多数客户端使用如下 JSON 结构（配置文件位置和外层键名以各客户端文档为准），也可参考 [JSON 配置示例](chatgpt_desktop_config.example.json)：
 
-```powershell
-codex mcp add antigravity -- node "C:\Projects\antigravity-mcp\dist\index.js"
+```json
+{
+  "mcpServers": {
+    "antigravity": {
+      "command": "node",
+      "args": ["C:/Projects/antigravity-mcp/dist/index.js"],
+      "env": {}
+    }
+  }
+}
 ```
 
-也可以在 Codex 的 `config.toml` 中配置，路径须替换为自己的实际位置：
+使用 TOML 的客户端写法类似，例如 Codex 的 `config.toml`：
 
 ```toml
 [mcp_servers.antigravity]
@@ -68,54 +76,13 @@ command = "node"
 args = ["C:/Projects/antigravity-mcp/dist/index.js"]
 ```
 
-不要同时重复添加同一个服务。配置后重新连接 MCP，确认四个工具可见。客户端命令和配置格式参见 [Codex MCP 官方说明](https://developers.openai.com/codex/mcp/)。
+提供命令行添加方式的客户端，同样把 `node` 和脚本路径作为服务命令传入。路径须替换为自己的实际位置；不要重复添加同一个服务。配置后重新连接 MCP，确认四个工具可见，可先运行 `--doctor`（见下文）确认 agy、配置和状态目录。
 
-其他支持 stdio 的客户端可参考 [JSON 配置示例](chatgpt_desktop_config.example.json)。
+与客户端无关的运行约定：
 
-### 2b. 配置 Claude Code
-
-完成第 1 步构建后，任选一种方式接入，不要重复添加。
-
-**方式一：命令行添加 MCP 服务（只有四个工具）**
-
-```powershell
-claude mcp add --scope user --transport stdio antigravity -- node "C:/Projects/antigravity-mcp/dist/index.js"
-```
-
-需要指定 agy 路径时，在服务名之前插入 `--env AGY_PATH=C:/Tools/agy/agy.exe`（`--env` 后面不能紧跟服务名，中间放 `--transport stdio` 等其他选项）。`--scope local` 只对当前项目生效，`--scope project` 写入项目根目录的 `.mcp.json` 与团队共享：
-
-```json
-{
-  "mcpServers": {
-    "antigravity": {
-      "type": "stdio",
-      "command": "node",
-      "args": ["C:/Projects/antigravity-mcp/dist/index.js"],
-      "env": { "AGY_PATH": "C:/Tools/agy/agy.exe" }
-    }
-  }
-}
-```
-
-工具在 Claude Code 中显示为 `mcp__antigravity__antigravity_ask` 等。用 `/mcp` 查看连接状态。
-
-**方式二：本地插件（MCP 服务 + 协作 Skill）**
-
-仓库根目录的 `.claude-plugin/` 同时是插件清单和本地插件市场，插件从源码目录原地加载，直接使用本地构建的 `dist/`：
-
-```powershell
-claude plugin marketplace add "C:/Projects/antigravity-mcp"
-claude plugin install antigravity-mcp@antigravity-local
-```
-
-插件提供同一 MCP 服务（工具名形如 `mcp__plugin_antigravity-mcp_antigravity__antigravity_ask`）和 `antigravity-delegation` Skill。插件不提供 `AGY_PATH` 设置；需要时在启动 Claude Code 的环境中设置该变量，或改用方式一。更新代码后重新 `npm run build` 并重启会话。
-
-**Claude Code 下的运行特性**
-
-- **同步调用会自动转后台**：主会话中运行超过约 2 分钟的 MCP 调用会转为 Claude Code 后台任务，完成后通知；因此大多数情况下同步调用即可。后台任务不跨越会话退出，但 agy 由独立 worker 执行，退出后仍可用 taskId 查询或取消。
-- **空闲期限**：stdio 服务的工具调用在 30 分钟内既无响应也无进度通知会被中止。同步等待期间 MCP 每 60 秒重复发送当前阶段作为进度通知（消息含 taskId 和已耗时）以维持调用；异步提交不发送。也可用 `CLAUDE_CODE_MCP_TOOL_IDLE_TIMEOUT`（毫秒，0 为关闭）调整。调用被中止不等于任务停止，用进度中的 taskId 查询。
-- **结果大小**：超过 5 万字符的工具结果会被 Claude Code 存为文件再读取。长报告的完整结果仍在 `response` 中；轮询时用 `view: "summary"` 保持结果短小。
-- 可先运行 `--doctor`（见下文）确认 agy、配置和状态目录。
+- **进度通知**：同步调用的请求带有 `progressToken` 时，服务按阶段发送标准 `notifications/progress`，并在等待期间每 60 秒重复发送当前阶段（消息含 taskId 和已耗时），供有空闲超时的客户端判断调用仍在进行；异步提交不发送。客户端是否展示进度、是否据此延长等待由客户端决定。
+- **请求超时**：客户端对单次工具请求的等待期限独立于任务执行期限。预计超过客户端等待能力时用 `async_mode` 先取得 taskId；请求被客户端中止不等于任务停止，可用进度消息或结果中的 taskId 查询或取消。
+- **结果大小**：完整结果包含全部最终响应；轮询时用 `view: "summary"` 保持结果短小，需要时再读取完整结果。
 
 ### 3. 指定 agy 路径（可选）
 
@@ -277,7 +244,7 @@ worker 意外崩溃后的自动后代清理目前仅 Windows 支持。POSIX 没�
 
 默认模型须在你的 agy 账号中可用；不可用时由用户显式指定可用模型，不自动替换。续接的模型与强度按“本次显式值 → 会话保存值 → 服务默认值”选择。可通过绝对路径 `ANTIGRAVITY_CONFIG_PATH` 使用自定义配置；启动时只读，不改写。
 
-客户端另有工具请求超时。Codex 可通过 `tool_timeout_sec` 调整单次请求等待；它不是 MCP 任务执行期限。预计超过客户端单次等待能力时，先异步取得 taskId。客户端超时不证明任务未执行，不要重复提交。[Codex 配置说明](https://developers.openai.com/codex/config-reference/)
+客户端另有工具请求超时（例如 Codex 的 `tool_timeout_sec`），它只限制单次请求等待，不是 MCP 任务执行期限。预计超过客户端单次等待能力时，先异步取得 taskId。客户端超时不证明任务未执行，不要重复提交。[Codex 配置说明](https://developers.openai.com/codex/config-reference/)
 
 ## 结果、权限与运行边界
 

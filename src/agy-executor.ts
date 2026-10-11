@@ -69,7 +69,7 @@ export function detectBackgroundAbort(stderr: string): boolean {
     && lines.some(line => line.includes('terminating') && line.includes('background task') && line.includes('on exit'));
 }
 const failureCode = (error: unknown) => /^(?:[A-Z][A-Z_]+)(?=:|$)/.exec(String(error instanceof Error ? error.message : error))?.[0] ?? 'EXECUTION_FAILED';
-// 同步等待期间按此间隔重复发送当前阶段，使客户端的空闲计时（如 Claude Code 的 stdio 空闲期限）看到任务仍在运行。
+// 同步等待期间按此间隔重复发送当前阶段，使有空闲超时的客户端看到任务仍在运行。
 export const PROGRESS_HEARTBEAT_MS = 60000;
 function requestProgress(options: AgyExecuteOptions): (result: TaskResult, heartbeat?: boolean) => Promise<void> {
   let previous: string | undefined, sequence = -1, pending = Promise.resolve();
