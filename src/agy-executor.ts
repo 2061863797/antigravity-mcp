@@ -291,6 +291,7 @@ function runTask(task: TaskRecord, { options, workspace, model, effort, args, ex
       });
       taskTracker.update(task, { rawLog });
       const workspaceBefore = options.analysis ? snapshotWorkspace(workspace) : undefined;
+      checkAbort(active);
       failureStage = 'CLI';
       stopped = false;
       let output: Awaited<ReturnType<typeof runManagedProcess>>;

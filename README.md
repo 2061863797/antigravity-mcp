@@ -241,7 +241,7 @@ powershell -ExecutionPolicy Bypass -File .\install.ps1
 ## 安全与运行边界
 
 - **默认自动审批**：agy 执行命令和写文件不再逐项确认（相当于 agy 的 `--dangerously-skip-permissions`，同时启用 `--sandbox`）。需要逐项确认时传 `auto_approve: false`，或在配置中设置 `defaultAutoApprove: false`。
-- **`ask` 不是只读保护**：它只靠提示词要求 agent 不改文件。工作目录是 git 仓库时，结果会附带 `workspaceChanged`；有变化时，`workspaceChangeSummary` 列出最多 20 个路径。这只说明运行期间工作区有变化，不能确定是 agent 改的（你或编辑器也可能同时在改）。这项检查不拦截也不回滚。
+- **`ask` 不是只读保护**：它只靠提示词要求 agent 不改文件。能完整取得 git 快照时，结果会附带 `workspaceChanged`；有变化时，`workspaceChangeSummary` 列出最多 20 个仓库根目录相对路径。检查包括 HEAD、暂存内容，以及已有脏文件和未跟踪文件的内容变化；Git 忽略的文件不在检查范围内。无法完整读取时省略这些字段，不能据此认为目录没有变化。这只说明运行期间工作区有变化，不能确定是 agent 改的（你或编辑器也可能同时在改）。这项检查不拦截也不回滚。
 - **直接在真实目录执行**：同一目录及其父子目录同一时间只能跑一个任务，不同目录可以并行。这种互斥不阻止其他软件修改文件。
 - **禁止作为工作目录**：磁盘根目录、用户主目录本身（子目录可以）、Windows 系统目录和 Program Files，以及 POSIX 的 `/etc`、`/usr`、`/bin`、`/sbin`、`/lib`、`/var`、`/System`、`/Library`、`/private`（系统临时目录除外）。判断基于真实路径，符号链接无法绕过。
 - **失败也保留改动**：失败、取消和超时都不回滚文件。确认进程全部停止后才解除目录占用；无法确认时会明确报告，可以再次取消。

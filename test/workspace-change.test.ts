@@ -10,7 +10,7 @@ const root = fs.mkdtempSync(path.join(fs.realpathSync.native(os.tmpdir()), 'agy-
 process.env.ANTIGRAVITY_MCP_STATE_HOME = path.join(root, 'state');
 const { executeAgy } = await import('../src/agy-executor.js');
 const { taskTracker } = await import('../src/utils/task-tracker.js');
-const { compareWorkspace } = await import('../src/utils/workspace-change.js');
+const { compareWorkspace, snapshotWorkspace } = await import('../src/utils/workspace-change.js');
 const cli = fileURLToPath(new URL('./fixtures/fake-agy.mjs', import.meta.url));
 let gitMissing: string | false = false;
 try { execFileSync('git', ['--version'], { stdio: 'ignore', windowsHide: true }); } catch { gitMissing = '需要 git 可执行文件'; }
@@ -37,6 +37,74 @@ test('ask reports workspace changes in a git repository without failing the task
 test('ask reports an unchanged git workspace explicitly', { skip: gitMissing }, async () => {
   const result = await run(repository('unchanged'), {});
   assert.equal(result.status, 'SUCCESS'); assert.equal(result.workspaceChanged, false); assert(!('workspaceChangeSummary' in result));
+});
+
+test('ask detects changed contents in files that were already dirty or untracked', { skip: gitMissing }, async () => {
+  const workspace = repository('already-dirty');
+  fs.writeFileSync(path.join(workspace, 'a.txt'), 'preexisting edit');
+  fs.writeFileSync(path.join(workspace, 'notes.txt'), 'preexisting untracked file');
+  const result = await run(workspace, { writes: { 'a.txt': 'another edit', 'notes.txt': 'changed untracked file' } });
+  assert.equal(result.status, 'SUCCESS'); assert.equal(result.workspaceChanged, true);
+  assert.deepEqual(result.workspaceChangeSummary, ['a.txt', 'notes.txt']);
+});
+
+test('different staged contents are detected even when HEAD, porcelain flags and worktree contents stay identical', { skip: gitMissing }, () => {
+  const workspace = repository('staged');
+  const file = path.join(workspace, 'a.txt');
+  fs.writeFileSync(file, 'first staged version'); git(workspace, 'add', 'a.txt'); fs.writeFileSync(file, 'unchanged worktree');
+  const status = () => execFileSync('git', ['status', '--porcelain=v1', '-z'], { cwd: workspace, encoding: 'utf8', windowsHide: true });
+  const beforeStatus = status(), before = snapshotWorkspace(workspace);
+  fs.writeFileSync(file, 'second staged version'); git(workspace, 'add', 'a.txt'); fs.writeFileSync(file, 'unchanged worktree');
+  assert.equal(status(), beforeStatus);
+  assert.equal(fs.readFileSync(file, 'utf8'), 'unchanged worktree');
+  assert.deepEqual(compareWorkspace(before, snapshotWorkspace(workspace)), { workspaceChanged: true, workspaceChangeSummary: ['a.txt'] });
+});
+
+test('dirty paths are resolved from the repository root when the execution directory is nested', { skip: gitMissing }, () => {
+  const workspace = repository('nested 空格'), nested = path.join(workspace, 'nested'); fs.mkdirSync(nested);
+  const file = path.join(workspace, 'a.txt'); fs.writeFileSync(file, 'first edit');
+  const before = snapshotWorkspace(nested);
+  fs.writeFileSync(file, 'second edit');
+  assert.deepEqual(compareWorkspace(before, snapshotWorkspace(nested)), { workspaceChanged: true, workspaceChangeSummary: ['a.txt'] });
+});
+
+test('file hashing consumes every chunk and a persistent deletion remains unchanged', { skip: gitMissing }, () => {
+  const workspace = repository('chunks'), file = path.join(workspace, 'data.bin');
+  const bytes = Buffer.alloc(2 * 64 * 1024 + 7, 1); fs.writeFileSync(file, bytes);
+  const before = snapshotWorkspace(workspace); bytes[bytes.length - 1] = 2; fs.writeFileSync(file, bytes);
+  assert.deepEqual(compareWorkspace(before, snapshotWorkspace(workspace)), { workspaceChanged: true, workspaceChangeSummary: ['data.bin'] });
+  fs.unlinkSync(path.join(workspace, 'a.txt'));
+  assert.deepEqual(compareWorkspace(snapshotWorkspace(workspace), snapshotWorkspace(workspace)), { workspaceChanged: false });
+});
+
+test('an unreadable dirty file omits change fields instead of claiming an unchanged workspace', { skip: gitMissing }, t => {
+  const workspace = repository('unreadable'), file = path.join(workspace, 'a.txt'); fs.writeFileSync(file, 'dirty');
+  const open = fs.openSync;
+  t.mock.method(fs, 'openSync', ((...args: Parameters<typeof open>) => {
+    if (path.resolve(String(args[0])) === file) throw Object.assign(new Error('unreadable'), { code: 'EACCES' });
+    return open(...args);
+  }) as typeof open);
+  assert.equal(snapshotWorkspace(workspace), undefined);
+  assert.equal(compareWorkspace(undefined, { head: 'same', entries: new Map() }), undefined);
+});
+
+test('link snapshots compare link targets without opening the external file on any platform', { skip: gitMissing }, t => {
+  const workspace = repository('link'), file = path.join(workspace, 'link.txt'); fs.writeFileSync(file, 'placeholder');
+  let target = 'outside-first';
+  const lstat = fs.lstatSync, readlink = fs.readlinkSync, open = fs.openSync;
+  t.mock.method(fs, 'lstatSync', ((...args: Parameters<typeof lstat>) => {
+    const stat = lstat(...args);
+    if (path.resolve(String(args[0])) !== file) return stat;
+    assert(stat);
+    const link = Object.create(stat); link.isSymbolicLink = () => true; return link;
+  }) as typeof lstat);
+  t.mock.method(fs, 'readlinkSync', ((...args: Parameters<typeof readlink>) =>
+    path.resolve(String(args[0])) === file ? Buffer.from(target) : readlink(...args)) as typeof readlink);
+  t.mock.method(fs, 'openSync', ((...args: Parameters<typeof open>) => {
+    assert.notEqual(path.resolve(String(args[0])), file, 'a link target must not be opened'); return open(...args);
+  }) as typeof open);
+  const before = snapshotWorkspace(workspace); target = 'outside-second';
+  assert.deepEqual(compareWorkspace(before, snapshotWorkspace(workspace)), { workspaceChanged: true, workspaceChangeSummary: ['link.txt'] });
 });
 
 test('non-git directories and code tasks omit the workspace change fields', { skip: gitMissing }, async () => {
