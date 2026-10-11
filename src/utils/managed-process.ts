@@ -2,7 +2,7 @@ import { spawn, execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import path from 'node:path';
 import fs from 'node:fs';
-import { killProcessTree } from './process-killer.js';
+import { killProcessTree, POSIX_TERM_GRACE_MS } from './process-killer.js';
 import { stateHome } from './task-store.js';
 
 import crypto from 'node:crypto';
@@ -384,7 +384,9 @@ export async function runManagedProcess(executable: string, args: string[], opti
     const stop = (reason: string) => {
       error ??= reason;
       if (!stopping) {
-        stopTimer = setTimeout(() => { error = 'PROCESS_TERMINATION_UNCONFIRMED'; finish(null, false); }, 10000);
+        // POSIX 的 SIGTERM 宽限期计入停止期限，避免宽限期未到就判定停止未确认。
+        stopTimer = setTimeout(() => { error = 'PROCESS_TERMINATION_UNCONFIRMED'; finish(null, false); },
+          10000 + (process.platform === 'win32' ? 0 : POSIX_TERM_GRACE_MS));
         stopping = (async () => {
           if (child.pid === undefined) return false;
           if (process.platform === 'win32' && !createdAt) {

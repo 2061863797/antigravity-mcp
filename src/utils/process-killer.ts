@@ -75,8 +75,11 @@ export async function findPidsByEnvToken(token: string): Promise<number[]> {
   return found;
 }
 
+// POSIX 先发 SIGTERM 让 agy 收尾，宽限期后仍存活的再 SIGKILL；Windows 仍由 Job Object 硬杀。
+export const POSIX_TERM_GRACE_MS = 5000;
+
 export async function killProcessTree(pid: number, expectedCreatedAt?: string, jobToken?: string, options: {
-  onDiagnostic?: (message: string) => void
+  onDiagnostic?: (message: string) => void; termGraceMs?: number
 } = {}): Promise<{ success: boolean; verifiedTerminated: boolean }> {
   if (!Number.isSafeInteger(pid) || pid <= 0) return { success: false, verifiedTerminated: false };
   if (process.platform === 'win32') {
@@ -101,13 +104,21 @@ export async function killProcessTree(pid: number, expectedCreatedAt?: string, j
   const escaped = jobToken ? await findPidsByEnvToken(jobToken) : [];
   const targets = [...new Set([pid, ...descendants, ...escaped])];
   let success = false;
-  for (const target of targets) {
-    if (!await isProcessAlive(target)) continue;
-    try {
-      process.kill(target, 'SIGKILL');
-      success = true;
-    } catch { /* Verification remains conservative on permission/command errors. */ }
+  const signal = async (name: NodeJS.Signals) => {
+    for (const target of targets) {
+      if (!await isProcessAlive(target)) continue;
+      try {
+        process.kill(target, name);
+        success = true;
+      } catch { /* Verification remains conservative on permission/command errors. */ }
+    }
+  };
+  await signal('SIGTERM');
+  const graceEnd = Date.now() + Math.max(0, options.termGraceMs ?? POSIX_TERM_GRACE_MS);
+  while (Date.now() < graceEnd && (await Promise.all(targets.map(isProcessAlive))).some(Boolean)) {
+    await new Promise(r => setTimeout(r, 100));
   }
+  await signal('SIGKILL');
   for (let i = 0; i < 32; i++) {
     const alive = await Promise.all(targets.map(isProcessAlive));
     if (alive.every(isAlive => !isAlive)) return { success: true, verifiedTerminated: true };
