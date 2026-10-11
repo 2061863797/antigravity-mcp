@@ -26,7 +26,7 @@ export interface AgyExecuteOptions {
   analysis?: boolean; mode?: 'plan' | 'accept-edits'; autoApprove?: boolean;
   conversationId?: string; asyncMode?: boolean;
   debugLog?: boolean; requestWaitTimeoutMs?: number; executionTimeoutMs?: number;
-  requestSignal?: AbortSignal; onProgress?: (revision: number, message: string) => Promise<void>;
+  requestSignal?: AbortSignal; onProgress?: (revision: number, message: string) => Promise<void>; progressHeartbeatMs?: number;
   cliPath?: string; cliArgsPrefix?: string[];
 }
 const InputSchema = z.object({
@@ -37,7 +37,8 @@ const InputSchema = z.object({
   debugLog: z.boolean().optional(),
   requestWaitTimeoutMs: z.number().positive().max(86400000).optional(), executionTimeoutMs: z.number().positive().max(86400000).optional(),
   cliPath: z.string().optional(), cliArgsPrefix: z.array(z.string()).optional(),
-  requestSignal: z.custom<AbortSignal>().optional(), onProgress: z.custom<AgyExecuteOptions['onProgress']>().optional()
+  requestSignal: z.custom<AbortSignal>().optional(), onProgress: z.custom<AgyExecuteOptions['onProgress']>().optional(),
+  progressHeartbeatMs: z.number().int().positive().optional()
 }).strict();
 const checkAbort = (options: { signal?: AbortSignal; deadlineAt?: number }) => {
   if (options.signal?.aborted) throw new Error(String(options.signal.reason ?? 'CANCELLED'));
@@ -68,14 +69,17 @@ export function detectBackgroundAbort(stderr: string): boolean {
     && lines.some(line => line.includes('terminating') && line.includes('background task') && line.includes('on exit'));
 }
 const failureCode = (error: unknown) => /^(?:[A-Z][A-Z_]+)(?=:|$)/.exec(String(error instanceof Error ? error.message : error))?.[0] ?? 'EXECUTION_FAILED';
-function requestProgress(options: AgyExecuteOptions): (result: TaskResult) => Promise<void> {
+// 同步等待期间按此间隔重复发送当前阶段，使客户端的空闲计时（如 Claude Code 的 stdio 空闲期限）看到任务仍在运行。
+export const PROGRESS_HEARTBEAT_MS = 60000;
+function requestProgress(options: AgyExecuteOptions): (result: TaskResult, heartbeat?: boolean) => Promise<void> {
   let previous: string | undefined, sequence = -1, pending = Promise.resolve();
-  return result => {
+  return (result, heartbeat = false) => {
     const stage = result.status === 'RUNNING' ? result.currentPhase : result.status;
-    if (!options.onProgress || options.asyncMode || previous === stage) return pending;
+    if (!options.onProgress || options.asyncMode || previous === stage && !heartbeat) return pending;
     previous = stage; sequence = Math.max(sequence + 1, result.revision);
     const value = sequence;
-    const message = [stage, result.taskId, result.activeTool, result.activeFile ?? result.recentCommand,
+    const elapsed = heartbeat && result.elapsedSeconds !== null ? Math.floor(result.elapsedSeconds) + 's' : null;
+    const message = [stage, result.taskId, elapsed, result.activeTool, result.activeFile ?? result.recentCommand,
       result.errorCode].filter(Boolean).join(': ').slice(0, 512).replace(/[\uD800-\uDBFF]$/, '');
     pending = pending.then(() => options.onProgress!(value, message)).catch(error => logger.warn('Progress notification failed:', error));
     return pending;
@@ -330,13 +334,12 @@ export async function executeAgy(input: AgyExecuteOptions, workerTaskId?: string
   task.completion = execution;
   return waitForTask(task, options);
 }
-function waitForTask(task: TaskRecord, options: AgyExecuteOptions, notifyProgress = requestProgress(options)): Promise<TaskResult> | TaskResult {
-  const taskId = task.result.taskId!;
+function waitForTask(task: TaskRecord, options: AgyExecuteOptions, notifyProgress = requestProgress(options)): Promise<TaskResult> | TaskResult {  const taskId = task.result.taskId!;
   if (options.asyncMode) return taskTracker.report(task);
   return new Promise<TaskResult>(resolve => {
     let settled = false;
     const finish = () => {
-      if (settled) return; settled = true; clearTimeout(waitTimer); unsubscribe();
+      if (settled) return; settled = true; clearTimeout(waitTimer); clearInterval(heartbeat); unsubscribe();
       options.requestSignal?.removeEventListener('abort', finish);
       const result = taskTracker.report(task);
       void notifyProgress(result).then(() => resolve(result));
@@ -348,6 +351,9 @@ function waitForTask(task: TaskRecord, options: AgyExecuteOptions, notifyProgres
     });
     const waitTimer = options.requestWaitTimeoutMs === undefined ? undefined
       : setTimeout(finish, Math.max(1, options.requestWaitTimeoutMs - (Date.now() - task.startedAt)));
+    const heartbeat = options.onProgress ? setInterval(() => {
+      if (!settled && task.result.status === 'RUNNING') void notifyProgress(taskTracker.report(task), true);
+    }, options.progressHeartbeatMs ?? PROGRESS_HEARTBEAT_MS) : undefined;
     options.requestSignal?.addEventListener('abort', finish, { once: true });
     task.completion?.then(finish, finish);
     void notifyProgress(task.result);
