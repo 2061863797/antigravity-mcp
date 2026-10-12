@@ -68,6 +68,13 @@ export function detectBackgroundAbort(stderr: string): boolean {
   return lines.some(line => line.includes('idle') && line.includes('background task'))
     && lines.some(line => line.includes('terminating') && line.includes('background task') && line.includes('on exit'));
 }
+const geminiFilterNotice = "This request was blocked by Gemini's filters. They can occasionally trigger by mistake on safe coding, security, or biology-related queries. "
+  + 'Please try rephrasing your prompt. You can [send feedback](https://ai.google.dev/gemini-api/docs/troubleshooting#file-bug) '
+  + 'or read more about [our policies here](https://policies.google.com/terms/generative-ai/use-policy).';
+function isGeminiFilterNotice(response: string): boolean {
+  // 仅识别实际观察到的完整拒绝通知；引用或讨论该通知的报告不能因此判失败。
+  return response.trim().replace(/\s+/g, ' ') === geminiFilterNotice;
+}
 const failureCode = (error: unknown) => /^(?:[A-Z][A-Z_]+)(?=:|$)/.exec(String(error instanceof Error ? error.message : error))?.[0] ?? 'EXECUTION_FAILED';
 // 同步等待期间按此间隔重复发送当前阶段，使有空闲超时的客户端看到任务仍在运行。
 export const PROGRESS_HEARTBEAT_MS = 60000;
@@ -335,6 +342,10 @@ function runTask(task: TaskRecord, { options, workspace, model, effort, args, ex
       if (envelope.error?.trim()) throw new Error('CLI_ERROR: ' + envelope.error);
       if (output.exitCode !== 0) throw new Error('CLI_EXIT_FAILED: ' + output.exitCode);
       if (detectBackgroundAbort(output.stderr)) throw new Error('CLI_BACKGROUND_ABORTED: agy 退出时终止了仍在运行的后台任务；response 只是部分结果，不代表任务完成。');
+      if (isGeminiFilterNotice(envelope.response)) {
+        failureStage = 'RESULT';
+        throw new Error('CLI_CONTENT_FILTERED: Gemini 内容过滤拒绝了本次请求；response 是拒绝通知，不是任务成果。');
+      }
       checkAbort(active);
       outcome = { status: 'SUCCESS', executionStatus: 'SUCCESS', errorCode: null };
     } catch (error) {

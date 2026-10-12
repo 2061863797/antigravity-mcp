@@ -277,12 +277,15 @@ powershell -ExecutionPolicy Bypass -File .\install.ps1
 | `WORKSPACE_BUSY` | 该目录（或其父子目录）已有任务在运行，等它结束或先取消 |
 | `PROCESS_TERMINATION_UNCONFIRMED` | 无法确认进程已停止，再次调用取消；确认停止前不要重新提交 |
 | `CLI_QUOTA_EXHAUSTED` | 额度用完，等额度恢复后用原会话续接，或改由 agent 自己完成 |
+| `CLI_CONTENT_FILTERED` | Gemini 内容过滤拒绝了本次请求，正文是拒绝通知，不能算任务完成。保留结果、文件和会话，由用户决定是否调整任务后重新提交，不自动重试或换模型 |
 | `CLI_BACKGROUND_ABORTED` | 让 agent 在前台运行验证命令，不要用后台命令 |
 | `TASK_NOT_FOUND` | 核对 `taskId`；已完成的记录只保留最近 100 个 |
 | 请求超时但任务仍在运行 | 用 `taskId` 查询，不要重复提交 |
 | 任务长时间停在等待后台命令（stderr 有 `waiting up to 30m0s for ... background task(s)`） | agy 把命令放到了后台，退出前最多等 30 分钟，最终会报 `CLI_BACKGROUND_ABORTED`。可以直接取消；委派时要求 agent 在前台运行验证命令，或用 `execution_timeout_minutes` 限制总时长 |
 | Linux 上升级前创建的任务一直显示 `PROCESS_TERMINATION_UNCONFIRMED`，目录一直被占用 | 旧任务记录缺少清理令牌，无法自动确认已停止，见下方“Linux：手动清理升级前的任务” |
 | `--doctor` 提示 PowerShell 不是 `FullLanguage` | 系统策略限制了 PowerShell，需要管理员调整 AppLocker/WDAC 策略 |
+
+当整段 `response` 是已验证的 Gemini 固定过滤拒绝通知时，MCP 返回 `status: "ERROR"`、`errorCode: "CLI_CONTENT_FILTERED"`、`failureStage: "RESULT"` 和 `isError: true`；仍保留上游的 `cliStatus`、退出码和原始正文，所以它们可能继续显示 `SUCCESS` 和 `0`。识别只容忍空白和换行差异，报告中引用或讨论这段通知不会被误判。其他格式的拒绝和一般任务成果仍须由父 agent 验收，不能只看 `SUCCESS`。已有历史任务记录不改写，修复对加载新版本后执行的任务生效。
 
 ### Linux：手动清理升级前的任务
 
