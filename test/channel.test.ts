@@ -642,13 +642,16 @@ test('model text accumulates deltas, resets for a new response step and keeps th
     { step_index: 3, step_type: 'agent_response', state: 'DONE', text_delta: current.slice(-5) }
   ];
   const result = await run(fixture('text-deltas'), { steps, response });
-  assert.equal(result.latestText, current.slice(-4000)); assert.equal(result.response, response); assert.equal(result.status, 'SUCCESS');
-  assert(!result.latestText.includes('前一段文字'));
+  // 成功终态只返回 response；累计逻辑在任务记录上核对。
+  const latestText = taskTracker.get(result.taskId!)!.result.latestText;
+  assert.equal(result.latestText, ''); assert.equal(latestText, current.slice(-4000)); assert.equal(result.response, response); assert.equal(result.status, 'SUCCESS');
+  assert(!latestText.includes('前一段文字'));
 });
 test('bounded model text never starts with half of a UTF-16 emoji', async () => {
   const current = '🙂'.repeat(2001) + '。';
   const result = await run(fixture('text-emoji-boundary'), { steps: [{ step_index: 2, step_type: 'agent_response', state: 'DONE', text_delta: current }] });
-  assert.equal(result.latestText, current.slice(-3999)); assert.equal(Buffer.from(result.latestText).toString('utf8'), result.latestText);
+  const latestText = taskTracker.get(result.taskId!)!.result.latestText;
+  assert.equal(latestText, current.slice(-3999)); assert.equal(Buffer.from(latestText).toString('utf8'), latestText);
 });
 test('Chinese and shell characters reach the CLI unchanged; report-schema flags are removed', async () => {
   const workspace = fixture('参数 中文'), capture = path.join(workspace, 'args.json'), context = '中文 "引号" \\路径 & $() \u0060原文\u0060';

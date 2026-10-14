@@ -1,6 +1,6 @@
 {
   "name": "antigravity-mcp-server",
-  "version": "2.0.0",
+  "version": "2.1.0",
   "description": "Local MCP channel for agents using Antigravity CLI",
   "type": "module",
   "main": "dist/index.js",
@@ -46,7 +46,10 @@
     "@modelcontextprotocol/sdk": "^1.30.0",
     "zod": "^3.24.2"
   },
-  "bundledDependencies": ["@modelcontextprotocol/sdk", "zod"],
+  "bundledDependencies": [
+    "@modelcontextprotocol/sdk",
+    "zod"
+  ],
   "devDependencies": {
     "@types/node": "^22.13.9",
     "tsx": "^4.19.3",

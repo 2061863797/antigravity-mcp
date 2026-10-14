@@ -1,7 +1,7 @@
 {
   "name": "antigravity-mcp",
   "displayName": "Antigravity MCP",
-  "version": "2.0.0",
+  "version": "2.1.0",
   "description": "通过本机 agy 委派分析、编码与复核，查询任务或额度，并取消任务。需要 Node.js 20+ 和已登录的 agy。",
   "author": { "name": "2061863797" },
   "homepage": "https://github.com/2061863797/antigravity-mcp#readme",
@@ -13,5 +13,21 @@
       "command": "node",
       "args": ["${CLAUDE_PLUGIN_ROOT}/runtime/dist/index.js"]
     }
+  },
+  "hooks": {
+    "PostToolUse": [
+      {
+        "matcher": "mcp__.*__antigravity_(ask|code)",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node",
+            "args": ["${CLAUDE_PLUGIN_ROOT}/runtime/dist/hook-wait.js", "--timeout", "60"],
+            "asyncRewake": true,
+            "timeout": 3700
+          }
+        ]
+      }
+    ]
   }
 }

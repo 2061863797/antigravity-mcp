@@ -14,16 +14,19 @@ import { sessionManager } from './utils/session-manager.js';
 import { CliEventParser } from './utils/cli-events.js';
 import { normalizeResult, type TaskResult } from './utils/register-tool.js';
 import { logger } from './utils/logger.js';
-import { stateHome, taskFile, writeJson, removeTaskInput } from './utils/task-store.js';
+import { stateHome, taskFile, writeJson, removeTaskInput, partialFile, guardLogFile } from './utils/task-store.js';
 import { isQuotaExhaustion } from './utils/native-quota.js';
 import { knownCreatedAt, identityState } from './utils/process-identity.js';
 import { killProcessTree } from './utils/process-killer.js';
 import { ensureAgyVersion } from './utils/agy-version.js';
 import { snapshotWorkspace, compareWorkspace } from './utils/workspace-change.js';
+import { exitFailureMessage } from './utils/exit-codes.js';
+import { ensureReadonlyGuard, READONLY_ENV, READ_TOOLS } from './utils/readonly-guard.js';
+import { PartialOutput } from './utils/partial-output.js';
 
 export interface AgyExecuteOptions {
   prompt: string; context?: string; workspaceDir: string; model?: string; effort?: 'low' | 'medium' | 'high' | 'xhigh' | 'max';
-  analysis?: boolean; mode?: 'plan' | 'accept-edits'; autoApprove?: boolean;
+  analysis?: boolean; mode?: 'plan' | 'accept-edits'; autoApprove?: boolean; readOnly?: boolean;
   conversationId?: string; asyncMode?: boolean;
   debugLog?: boolean; requestWaitTimeoutMs?: number; executionTimeoutMs?: number;
   requestSignal?: AbortSignal; onProgress?: (revision: number, message: string) => Promise<void>; progressHeartbeatMs?: number;
@@ -32,7 +35,7 @@ export interface AgyExecuteOptions {
 const InputSchema = z.object({
   prompt: z.string().trim().min(1).max(24000), context: z.string().max(20000).optional(), workspaceDir: z.string().min(1).max(32767).refine(path.isAbsolute),
   model: z.string().regex(/^[a-zA-Z0-9][a-zA-Z0-9._-]{0,127}$/).optional(), effort: z.enum(['low', 'medium', 'high', 'xhigh', 'max']).optional(),
-  analysis: z.boolean().optional(), autoApprove: z.boolean().optional(),
+  analysis: z.boolean().optional(), autoApprove: z.boolean().optional(), readOnly: z.boolean().optional(),
   mode: z.enum(['plan', 'accept-edits']).optional(), conversationId: z.string().min(1).max(256).optional(), asyncMode: z.boolean().optional(),
   debugLog: z.boolean().optional(),
   requestWaitTimeoutMs: z.number().positive().max(86400000).optional(), executionTimeoutMs: z.number().positive().max(86400000).optional(),
@@ -48,8 +51,9 @@ export function buildCliArguments(options: AgyExecuteOptions, workspace: string,
   const instruction = options.mode === 'plan' ? 'Produce the requested plan; do not apply implementation changes.'
     : options.analysis ? 'Analyze only; do not modify files. Deliver the requested answer, investigation or review findings, rather than an implementation plan unless explicitly requested.'
       : 'Complete only the requested edits.';
+  const readOnly = options.readOnly ? ' Read-only mode is enforced: file writes, edits and commands other than read-only inspection commands will be denied, so report findings in your answer.' : '';
   const prompt = [options.prompt, options.context ? 'Context:\n' + options.context : '',
-    'Execution workspace: ' + workspace + '. ' + instruction].filter(Boolean).join('\n\n');
+    'Execution workspace: ' + workspace + '. ' + instruction + readOnly].filter(Boolean).join('\n\n');
   const args = [...options.cliArgsPrefix ?? [], '-p', prompt, '--output-format', 'stream-json', '--print-timeout', '0',
     '--add-dir', workspace, '--model', model, '--effort', effort, '--mode', options.mode ?? 'accept-edits', '--sandbox'];
   if (options.autoApprove) args.push('--dangerously-skip-permissions');
@@ -161,6 +165,7 @@ function prepareExecution(input: AgyExecuteOptions): PreparedExecution | TaskRes
   try {
     options = { ...input, ...InputSchema.parse(input) };
     if (options.requestSignal?.aborted) throw new Error('CANCELLED');
+    if (options.readOnly && !options.analysis) throw new Error('INVALID_ARGUMENT: read_only is only available for analysis tasks (antigravity_ask)');
     source = options.conversationId ? canonicalPath(options.workspaceDir) : resolveWorkspaceDir(options.workspaceDir);
     const session = options.conversationId ? sessionManager.resolve(options.conversationId, source) : undefined;
     workspace = session?.workspaceDir ?? source;
@@ -188,6 +193,8 @@ async function claimTask({ options, source, workspace, model, effort, executable
     if (!workerTaskId) {
       await ensureAgyVersion(executable, options.cliArgsPrefix, { cwd: workspace, signal: options.requestSignal });
       if (options.requestSignal?.aborted) throw new Error('CANCELLED');
+      // 只读守卫装不上时不启动任务，不能降级成仅靠提示词约束。
+      if (options.readOnly) ensureReadonlyGuard();
     }
     if (workerTaskId) {
       task = taskTracker.get(taskId)!;
@@ -198,7 +205,8 @@ async function claimTask({ options, source, workspace, model, effort, executable
       leased = acquireWorkspaceLease(taskId, workspace, posixJobToken);
       if (!leased) throw new Error('WORKSPACE_BUSY: another task owns this execution directory');
       task = taskTracker.create({ taskId, workspaceDir: source, executionWorkspaceDir: workspace, model, effort,
-        cliMode: options.mode ?? 'accept-edits', autoApprove: options.autoApprove ?? true, conversationId: options.conversationId ?? null }, posixJobToken);
+        cliMode: options.mode ?? 'accept-edits', autoApprove: options.autoApprove ?? true, readOnly: options.readOnly ?? false,
+        conversationId: options.conversationId ?? null }, posixJobToken);
       task.lease = workspaceLeaseReference(taskId);
       task.result.deadlineAt = options.executionTimeoutMs === undefined ? null : new Date(task.startedAt + options.executionTimeoutMs).toISOString();
       taskTracker.persist(task, true);
@@ -246,6 +254,9 @@ function runTask(task: TaskRecord, { options, workspace, model, effort, args, ex
   const execution = (async (): Promise<void> => {
     let stopped = true;
     let outcome: Partial<TaskResult> & { status: Exclude<TaskResult['status'], 'RUNNING'> } | undefined;
+    let partial: PartialOutput | undefined;
+    const filesRead = new Set<string>(), commands: string[] = [], countedSteps = new Set<string>();
+    let toolCalls = 0, responseChars = 0, readOnlyViolation: string | undefined;
     try {
       taskTracker.update(task, { deadlineAt: deadlineAt === undefined ? null : new Date(deadlineAt).toISOString() });
       checkAbort(active);
@@ -261,10 +272,22 @@ function runTask(task: TaskRecord, { options, workspace, model, effort, args, ex
         sessionManager.save(id, workspace, taskId, { model, effort: effort as AgyExecuteOptions['effort'] });
         taskTracker.update(task, { conversationId: id }); taskTracker.persist(task, true); registeredConversation = id;
       };
+      partial = new PartialOutput(partialFile(taskId));
+      const guardLog = options.readOnly ? guardLogFile(taskId) : undefined;
       const parser = new CliEventParser(event => {
         try {
           if (event.conversationId) registerConversation(event.conversationId);
           const tool = event.kind.startsWith('tool_');
+          // 同一步骤可能只出现结束事件，按步骤去重计数。
+          if (tool && event.stepId && !countedSteps.has(event.stepId)) {
+            countedSteps.add(event.stepId); toolCalls++;
+            if (event.tool === 'run_command' && event.command) commands.push(event.command);
+          }
+          if (tool && event.file && ['view_file', 'view_file_outline', 'view_code_item'].includes(event.tool ?? '')) filesRead.add(event.file);
+          // 只读任务出现非读取工具成功完成，说明守卫没有拦住，按违规处理。
+          if (options.readOnly && event.kind === 'tool_end' && event.success !== false && event.tool
+            && !READ_TOOLS.includes(event.tool) && event.tool !== 'run_command') readOnlyViolation ??= event.tool;
+          if (event.kind === 'response') { partial?.text(event.stepId, event.textDelta); responseChars += event.textDelta?.length ?? 0; }
           let currentPhase = task.result.currentPhase;
           if (currentPhase !== 'STOPPING') {
             if (event.kind === 'tool_start' && ['write_to_file', 'replace_file_content', 'multi_replace_file_content', 'notebook_edit'].includes(event.tool ?? '')) currentPhase = 'CODING';
@@ -287,7 +310,7 @@ function runTask(task: TaskRecord, { options, workspace, model, effort, args, ex
           }
           const currentTool = recentTools.filter(item => item.state === 'ACTIVE').at(-1);
           taskTracker.update(task, { currentPhase,
-            recentTools, latestText,
+            recentTools, latestText, progress: { filesRead: filesRead.size, commandsRun: commands.length, toolCalls, responseChars },
             ...(event.permissionMode ? { cliPermissionMode: event.permissionMode } : {}),
             activeTool: tool ? currentTool?.tool ?? null : task.result.activeTool,
             activeFile: tool ? currentTool?.file ?? null : task.result.activeFile,
@@ -298,12 +321,14 @@ function runTask(task: TaskRecord, { options, workspace, model, effort, args, ex
       });
       taskTracker.update(task, { rawLog });
       const workspaceBefore = options.analysis ? snapshotWorkspace(workspace) : undefined;
+      if (guardLog) { ensureReadonlyGuard(); fs.rmSync(guardLog, { force: true }); }
       checkAbort(active);
       failureStage = 'CLI';
       stopped = false;
       let output: Awaited<ReturnType<typeof runManagedProcess>>;
       try {
         output = await runManagedProcess(executable, args, { cwd: workspace, signal: active.signal, streamingOutput: true, jobToken: task.posixJobToken,
+          ...(guardLog ? { env: { [READONLY_ENV]: guardLog } } : {}),
           onSpawn: (pid, createdAt) => { track(pid, true, createdAt); taskTracker.update(task, { executionStarted: true }); },
           onExit: pid => track(pid, false), onOutput: () => taskTracker.output(task),
           onStdoutChunk: chunk => {
@@ -320,6 +345,7 @@ function runTask(task: TaskRecord, { options, workspace, model, effort, args, ex
         ...compareWorkspace(workspaceBefore, workspaceBefore && snapshotWorkspace(workspace)) });
       if (!stopped) throw new Error('PROCESS_TERMINATION_UNCONFIRMED');
       if (streamFailure) throw streamFailure;
+      if (readOnlyViolation) { failureStage = 'RESULT'; throw new Error(`READONLY_VIOLATION: 只读任务中写类工具 ${readOnlyViolation} 执行成功，守卫没有拦住；检查工作区改动。`); }
       failureStage = 'RESULT';
       const envelope = parser.finish();
       taskTracker.update(task, { rawLog, response: envelope?.response ?? '', cliStatus: envelope?.status ?? null,
@@ -330,7 +356,7 @@ function runTask(task: TaskRecord, { options, workspace, model, effort, args, ex
       checkAbort(active);
       if (output.error) throw new Error(output.error);
       if (!envelope) {
-        if (!parser.protocolError && output.exitCode !== 0) throw new Error('CLI_EXIT_FAILED: ' + (output.stderr.trim() || String(output.exitCode)));
+        if (!parser.protocolError && output.exitCode !== 0) throw new Error('CLI_EXIT_FAILED: ' + exitFailureMessage(output.exitCode, output.stderr));
         failureStage = 'RESULT'; throw new Error('CLI_OUTPUT_INVALID: ' + (parser.protocolError ?? 'No valid final result'));
       }
       if (envelope.status !== 'SUCCESS') {
@@ -340,7 +366,12 @@ function runTask(task: TaskRecord, { options, workspace, model, effort, args, ex
         throw new Error(code + ': ' + detail);
       }
       if (envelope.error?.trim()) throw new Error('CLI_ERROR: ' + envelope.error);
-      if (output.exitCode !== 0) throw new Error('CLI_EXIT_FAILED: ' + output.exitCode);
+      if (output.exitCode !== 0) throw new Error('CLI_EXIT_FAILED: ' + exitFailureMessage(output.exitCode, output.stderr));
+      // 有工具调用却没有守卫记录，说明 agy 没有加载守卫插件（例如被手动禁用），不能把结果当作只读执行。
+      if (guardLog && toolCalls > 0 && !fs.existsSync(guardLog)) {
+        failureStage = 'RESULT';
+        throw new Error('READONLY_GUARD_UNAVAILABLE: agy 没有调用只读守卫（检查 ~/.gemini/config 中插件 antigravity-mcp-readonly 是否被禁用）；本次结果不保证只读。');
+      }
       if (detectBackgroundAbort(output.stderr)) throw new Error('CLI_BACKGROUND_ABORTED: agy 退出时终止了仍在运行的后台任务；response 只是部分结果，不代表任务完成。');
       if (isGeminiFilterNotice(envelope.response)) {
         failureStage = 'RESULT';
@@ -356,6 +387,7 @@ function runTask(task: TaskRecord, { options, workspace, model, effort, args, ex
         code = 'CLI_QUOTA_EXHAUSTED';
       }
       if (code === 'TIMEOUT' && !aborted) task.abortController!.abort('TIMEOUT');
+      if (task.result.executionStarted) partial?.footer([...filesRead], commands);
       if (code === 'PROCESS_TERMINATION_UNCONFIRMED') taskTracker.update(task, {
         executionStatus: code, errorCode: code, failureStage, errorMessage: String(error), nextAction: null, currentPhase: 'STOPPING', response: task.result.response || String(error) });
       else outcome = { status: code === 'TIMEOUT' ? 'TIMEOUT' : code === 'CANCELLED' ? 'CANCELLED' : 'ERROR',
@@ -364,6 +396,10 @@ function runTask(task: TaskRecord, { options, workspace, model, effort, args, ex
       clearTimeout(deadlineTimer);
       active.signal.removeEventListener('abort', stopping);
       if (stopped) releaseWorkspaceLease(taskId);
+    }
+    // 成功时正式回答已在 response 中，部分结论和守卫记录不再需要。
+    if (outcome?.status === 'SUCCESS') for (const file of [partialFile(taskId), guardLogFile(taskId)]) {
+      try { fs.rmSync(file, { force: true }); } catch (error) { logger.warn('Temporary task file cleanup failed:', error); }
     }
     if (outcome) taskTracker.finish(task, outcome);
   })().catch(error => {

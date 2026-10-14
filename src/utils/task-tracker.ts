@@ -3,9 +3,23 @@ import { killProcessTree, findPidsByEnvTokenSync } from './process-killer.js';
 import { releaseWorkspaceLease } from './workspace-lease.js';
 import { logger } from './logger.js';
 import crypto from 'node:crypto';
-import { saveTask, readTask, taskStamp, pruneTasks, requestCancellation, removeTaskInput, type StoredTask } from './task-store.js';
+import { saveTask, readTask, taskStamp, pruneTasks, requestCancellation, removeTaskInput, partialFile, readPartialTail, type StoredTask } from './task-store.js';
 import { identityState, requireSelfIdentity } from './process-identity.js';
 
+// 失败且没有正式回答（response 为空或只是错误信息）时，附上运行中保存的部分结论；成功或已有回答时不重复返回。
+export function partialOutput(id: string, result: TaskResult): Pick<TaskResult, 'partialResponse' | 'partialOutputPath'> | Record<string, never> {
+  const answered = !!result.response.trim() && result.response !== result.errorMessage;
+  if (result.status === 'SUCCESS' || result.partialResponse || answered) return {};
+  const tail = readPartialTail(id);
+  return tail ? { partialResponse: tail, partialOutputPath: partialFile(id) } : {};
+}
+// 粗粒度进度：阶段、状态或错误变化，已读文件每 10 个、命令每 5 个才算明显变化。
+export const FILES_READ_STEP = 10, COMMANDS_RUN_STEP = 5;
+function significantChange(before: TaskResult, after: TaskResult): boolean {
+  return before.status !== after.status || before.currentPhase !== after.currentPhase || before.errorCode !== after.errorCode
+    || Math.floor(before.progress.filesRead / FILES_READ_STEP) !== Math.floor(after.progress.filesRead / FILES_READ_STEP)
+    || Math.floor(before.progress.commandsRun / COMMANDS_RUN_STEP) !== Math.floor(after.progress.commandsRun / COMMANDS_RUN_STEP);
+}
 export interface TaskRecord extends StoredTask {
   abortController?: AbortController; completion?: Promise<void>; cancellation?: Promise<void>;
   remote?: boolean; persistTimer?: ReturnType<typeof setTimeout>;
@@ -45,8 +59,9 @@ export class TaskTracker {
         if (task.result.executionStatus !== code) {
           task.result = addFailureDetails({ ...task.result, status: pending ? 'RUNNING' : 'ERROR', executionStatus: code, errorCode: code,
             failureStage: this.failureStage(task.result.currentPhase) ?? 'CLI',
-            revision: task.result.revision + 1, managedProcess: pending ? 'UNKNOWN' : 'EXITED', currentPhase: pending ? 'STOPPING' : 'IDLE',
+            revision: task.result.revision + 1, progressRevision: task.result.progressRevision + 1, managedProcess: pending ? 'UNKNOWN' : 'EXITED', currentPhase: pending ? 'STOPPING' : 'IDLE',
             errorMessage: '任务执行进程已退出；已有文件、会话和结果片段保留。', nextAction: null,
+            ...(pending ? {} : partialOutput(id, task.result)),
             lastActivity: task.result.lastActivity ?? this.activity(task.result), activeTool: null, activeFile: null, recentCommand: null });
           this.persist(task, true);
           if (!pending) removeTaskInput(id);
@@ -106,6 +121,7 @@ export class TaskTracker {
     const result = addFailureDetails({ ...task.result, ...data, ...(task.result.status === 'RUNNING' ? this.observed(task) : {}),
       revision: task.result.revision + 1 });
     if (effective) result.lastProgressAt = new Date().toISOString();
+    if (significantChange(task.result, result)) result.progressRevision = task.result.progressRevision + 1;
     task.result = result;
     this.persist(task); this.notify(task);
   }
@@ -124,9 +140,11 @@ export class TaskTracker {
     const running = task.result.status === 'RUNNING' && owner === 'ALIVE';
     const children = task.childPids.map(pid => identityState(pid, task.childCreatedAt?.[pid], running ? task.heartbeatAt : undefined));
     const unknown = owner === 'UNKNOWN' || children.includes('UNKNOWN');
+    // 终态时完整文本只返回一份：成功看 response，失败且有部分结论时看 partialResponse。
+    const duplicate = task.result.status === 'SUCCESS' || task.result.status !== 'RUNNING' && !!task.result.partialResponse;
     return addFailureDetails({ ...task.result, ...(running ? this.observed(task) : {}), unchanged,
       response: unchanged || running && !task.result.errorCode ? '' : task.result.response,
-      recentTools: unchanged ? [] : task.result.recentTools, latestText: unchanged ? '' : task.result.latestText,
+      recentTools: unchanged ? [] : task.result.recentTools, latestText: unchanged || duplicate ? '' : task.result.latestText,
       ...(owner === 'UNKNOWN' && !task.result.errorCode ? { executionStatus: 'PROCESS_TERMINATION_UNCONFIRMED', errorCode: 'PROCESS_TERMINATION_UNCONFIRMED',
         errorMessage: '无法核对原 worker 的进程身份；会话、文件和任务记录保留。', failureStage: 'STOPPING' as const, nextAction: null } : {}),
       managedProcess: unknown || task.result.executionStatus === 'PROCESS_TERMINATION_UNCONFIRMED' ? 'UNKNOWN'
@@ -134,7 +152,7 @@ export class TaskTracker {
   }
   public finish(task: TaskRecord, data: Partial<TaskResult> & { status: Exclude<TaskResult['status'], 'RUNNING'> }): void {
     if (task.result.status !== 'RUNNING') return;
-    this.update(task, { ...data, failureStage: data.errorCode ? data.failureStage ?? task.result.failureStage ?? this.failureStage(task.result.currentPhase) : null,
+    this.update(task, { ...data, ...partialOutput(task.result.taskId!, { ...task.result, ...data }), failureStage: data.errorCode ? data.failureStage ?? task.result.failureStage ?? this.failureStage(task.result.currentPhase) : null,
         errorMessage: data.errorMessage ?? data.errorCode ?? null, nextAction: null, lastActivity: task.result.lastActivity ?? this.activity(task.result),
       currentPhase: 'IDLE', activeTool: null, activeFile: null, recentCommand: null }, true);
     this.persist(task, true);
@@ -162,7 +180,16 @@ export class TaskTracker {
     } };
   }
   public async waitForRevision(id: string, revision: number, waitMs: number, signal?: AbortSignal): Promise<void> {
-    const ready = () => { const task = this.get(id); return !task || task.result.status !== 'RUNNING' || task.result.revision !== revision; };
+    return this.waitUntil(id, waitMs, signal, task => task.result.revision !== revision);
+  }
+  // 只在终态或需要上层处理（STOPPING 且有错误）时返回，普通工具调用不打断等待。
+  public async waitForTerminal(id: string, waitMs: number, signal?: AbortSignal, progressRevision?: number): Promise<void> {
+    return this.waitUntil(id, waitMs, signal, task => !!task.result.errorCode && task.result.currentPhase === 'STOPPING'
+      || progressRevision !== undefined && task.result.progressRevision !== progressRevision);
+  }
+  // 任务消失或进入终态时总是返回；changed 决定运行中的哪些变化也提前返回。
+  private async waitUntil(id: string, waitMs: number, signal: AbortSignal | undefined, changed: (task: TaskRecord) => boolean): Promise<void> {
+    const ready = () => { const task = this.get(id); return !task || task.result.status !== 'RUNNING' || changed(task); };
     if (ready() || waitMs <= 0 || signal?.aborted) return;
     await new Promise<void>(resolve => {
       const finish = () => { clearTimeout(timer); unsubscribe(); signal?.removeEventListener('abort', finish); resolve(); };

@@ -23,6 +23,31 @@ export function taskFile(id: string, kind = 'task'): string {
   if (!/^[a-zA-Z0-9_-]{1,200}$/.test(id)) throw new Error('INVALID_TASK_ID');
   return path.join(root(), id + '.' + kind + '.json');
 }
+// 运行中持续追加的文字与进度记录；进程被结束后仍可从这里取回部分结论。
+export function partialFile(id: string): string {
+  if (!/^[a-zA-Z0-9_-]{1,200}$/.test(id)) throw new Error('INVALID_TASK_ID');
+  return path.join(root(), id + '.partial.md');
+}
+// 终态结果已经由工具返回给调用方时写入标记；Claude Code 的完成唤醒钩子据此跳过重复唤醒。
+export function collectedFile(id: string): string { return partialFile(id).replace(/\.partial\.md$/, '.collected'); }
+export function markCollected(id: string): void {
+  try { fs.writeFileSync(collectedFile(id), new Date().toISOString(), { mode: 0o600 }); } catch { /* 标记失败只会多一次唤醒。 */ }
+}
+export function isCollected(id: string): boolean { return fs.existsSync(collectedFile(id)); }
+// 只读守卫每次判定追加一行，用来确认 agy 确实调用了守卫。
+export function guardLogFile(id: string): string { return partialFile(id).replace(/\.partial\.md$/, '.readonly.log'); }
+// 读取部分结论的尾部；文件不存在或不可读时返回 null，不影响任务状态。
+export function readPartialTail(id: string, maxChars = 8000): string | null {
+  try {
+    const file = partialFile(id), size = fs.statSync(file).size, start = Math.max(0, size - maxChars * 4);
+    const fd = fs.openSync(file, 'r');
+    try {
+      const buffer = Buffer.alloc(size - start); fs.readSync(fd, buffer, 0, buffer.length, start);
+      const text = buffer.toString('utf8').replace(/^�+/, '').slice(-maxChars).replace(/^[\uDC00-\uDFFF]/, '');
+      return text.trim() ? text : null;
+    } finally { fs.closeSync(fd); }
+  } catch { return null; }
+}
 export function writeJson(file: string, data: unknown): void {
   fs.mkdirSync(path.dirname(file), { recursive: true });
   const temporary = file + '.' + crypto.randomUUID() + '.tmp';
@@ -75,8 +100,11 @@ export function pruneTasks(): void {
   const finished = (task: StoredTask) => Date.parse(task.result.lastObservedAt ?? '') || task.startedAt;
   completed.sort((left, right) => finished(right) - finished(left));
   for (const record of completed.slice(100)) {
-    try { fs.unlinkSync(taskFile(record.result.taskId!)); }
-    catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; }
+    const id = record.result.taskId!;
+    for (const file of [taskFile(id), partialFile(id), guardLogFile(id), collectedFile(id)]) {
+      try { fs.unlinkSync(file); }
+      catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; }
+    }
   }
 }
 const CancelSchema = z.object({ token: z.string().uuid(), requestId: z.string().uuid(), reason: z.enum(['CANCELLED', 'TIMEOUT']) }).strict();

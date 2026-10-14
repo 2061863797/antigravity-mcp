@@ -7,7 +7,7 @@
 
 直接调用本机 agy，不调用 Gemini API，不保存账号凭据。
 
-**版本 2.0.0 · 结果协议 schemaVersion 3 · 传输方式：本地 stdio**
+**版本 2.1.0 · 结果协议 schemaVersion 3 · 传输方式：本地 stdio**
 
 ## 提供的工具
 
@@ -117,11 +117,15 @@ powershell -ExecutionPolicy Bypass -File .\install.ps1
 {
   "name": "antigravity_ask",
   "arguments": {
-    "prompt": "审核保存流程，说明问题的触发条件、调用路径和复现方法。不要修改文件。",
-    "workspace_dir": "C:/Projects/example"
+    "prompt": "审核保存流程，说明问题的触发条件、调用路径和复现方法。",
+    "workspace_dir": "C:/Projects/example",
+    "read_only": true,
+    "timeout_minutes": 25
   }
 }
 ```
+
+`read_only: true` 由 agy 钩子硬性拦截写文件和有副作用的命令（见“只读模式”）。`timeout_minutes` 设得比客户端单次工具超时略短；到期返回 `RUNNING` 和 `taskId`，任务继续，再用下面的 `wait_for: "terminal"` 等到结束。
 
 ### 后台编码
 
@@ -138,16 +142,54 @@ powershell -ExecutionPolicy Bypass -File .\install.ps1
 
 返回结果里有 `taskId`，之后用它查询或取消。
 
-### 查询进度（长轮询）
+### 完成唤醒（仅 Claude Code 插件）
+
+MCP 协议本身没有“任务完成后唤醒 agent”的机制。以插件方式装进 Claude Code 时，插件自带一个后台钩子（Claude Code 的 `asyncRewake`）：
+
+- `antigravity_ask` / `antigravity_code` 返回“仍在运行”（异步启动，或同步等待到期）后，钩子在后台等任务结束，再以一条系统提示唤醒 Claude，提示里有 `taskId` 和结束状态。会话空闲时也会立即唤醒。
+- 结果已经由 `antigravity_ask` / `antigravity_code`（同步完成）、`antigravity_status` 或 `antigravity_cancel_task` 返回过的任务不会再唤醒。
+- 最多等 60 分钟；到时任务仍在运行，也会唤醒一次并说明，之后需要自己用 `wait_for: "terminal"` 等待。
+- 子 agent 启动的任务会唤醒主会话，提示里标明是哪个子 agent 启动的。
+- 限制：Codex 等其他客户端没有这个机制；`claude -p` 非交互模式结束时会终止后台钩子；钩子按默认状态目录（用户主目录）查找任务，如果给 MCP 服务设置了 `ANTIGRAVITY_MCP_STATE_HOME`，需要在启动 Claude Code 的环境里设置同样的值。
+- 不通过插件、手动注册 MCP 服务时，可以在 Claude Code 的 `settings.json` 里加同样的钩子：
+
+```json
+{
+  "hooks": {
+    "PostToolUse": [
+      {
+        "matcher": "mcp__.*__antigravity_(ask|code)",
+        "hooks": [
+          { "type": "command", "command": "node", "args": ["<本仓库>/dist/hook-wait.js", "--timeout", "60"], "asyncRewake": true, "timeout": 3700 }
+        ]
+      }
+    ]
+  }
+}
+```
+
+钩子的 `timeout`（秒）必须比 `--timeout`（分钟）长，否则 Claude Code 会先结束钩子，唤醒就丢了。
+
+### 等待结果
+
+MCP 在任务完成时**不会**主动通知调用方（上面的 Claude Code 完成唤醒除外）。需要结果时：
 
 ```json
 {
   "name": "antigravity_status",
-  "arguments": { "task_id": "task_...", "after_revision": 12, "wait_ms": 60000, "view": "summary" }
+  "arguments": { "task_id": "task_...", "wait_for": "terminal", "wait_ms": 60000, "view": "summary" }
 }
 ```
 
-把上次结果中的 `revision` 填进 `after_revision`：有变化时立即返回，没有变化最多等 `wait_ms` 毫秒。`summary` 视图只返回简报，任务结束时自动返回完整结果。需要再次读取完整结果时，去掉 `after_revision` 和 `view` 即可。
+`wait_for` 决定什么时候提前返回：
+
+| 值 | 提前返回的时机 | 适合 |
+| --- | --- | --- |
+| `terminal` | 任务结束，或出现需要处理的错误 | 等结果；普通工具调用不会打断等待 |
+| `progress` | 上面两种情况，或阶段变化、每多读 10 个文件、每多跑 5 条命令 | 想看粗粒度进度 |
+| `revision`（默认，兼容旧用法） | 配合 `after_revision`，记录有任何变化 | 逐事件观察；agy 每读一个文件就会返回，不适合长时间等待 |
+
+仍在运行时返回进度摘要（`progress`：已读文件数、已运行命令数、工具调用数、已用时间、阶段；以及粗粒度版本号 `progressRevision`），用同样参数再查一次即可；任务结束时直接返回完整结果。Codex 没有调大该 MCP 的 `tool_timeout_sec`（默认约 60 秒）时，`wait_ms` 用 50000 以内，避免撞上客户端超时。
 
 ### 取消
 
@@ -189,15 +231,16 @@ powershell -ExecutionPolicy Bypass -File .\install.ps1
 | `effort` | 配置的默认强度 | `low` / `medium` / `high` / `xhigh` / `max` |
 | `cli_mode` | `accept-edits` | 需要规划流程时传 `plan` |
 | `auto_approve` | `true` | 自动批准命令和文件写入；`false` 时遵循本机 agy 的权限配置 |
-| `async_mode` | `false` | `true` 时立即返回 `taskId` |
-| `timeout_minutes` | 不限 | 只限制同步等待时长；到期返回 `taskId`，任务继续运行 |
+| `read_only` | `false` | 仅 `antigravity_ask`：只允许读文件、搜索和只读命令，其余被拒绝 |
+| `async_mode` | `false` | `true` 时立即返回 `taskId`；完成时没有通知 |
+| `timeout_minutes` | 不限 | 只限制同步等待时长；到期返回 `taskId`，任务继续运行。建议设为略小于客户端工具超时 |
 | `execution_timeout_minutes` | 不限 | 限制任务本身的执行时长；到期停止任务 |
 | `conversation_id` | 无 | 续接已有会话 |
 | `debug_log` | `false` | 保存最多 5 MiB 原始输出，用于排错 |
 
 两个时长参数的范围都是大于 0 分钟、不超过 1440 分钟。Windows 上，转义后的整条命令行不能超过 30,000 字符。
 
-**同步还是异步？** 后续工作依赖 agy 的结果、且没有别的事可做时，用同步；有独立工作可以并行推进时，用异步。客户端对单次请求通常有自己的超时：预计会超时就先用异步拿到 `taskId`。请求超时不等于任务停止，不要重复提交。
+**同步还是异步？** 完成时没有通知。在 agy 完成前没有别的事可做（例如只等审核结果）时，用同步并设 `timeout_minutes`，比客户端单次工具超时略短（Codex 看该 MCP 的 `tool_timeout_sec`，Claude Code 看其 MCP 工具超时）；到期返回 `RUNNING` 后用 `wait_for: "terminal"` 继续等。只有确实要并行推进其他工作时才用异步，之后同样用 `wait_for: "terminal"` 查询，不要按 `revision` 高频轮询。请求超时不等于任务停止，不要重复提交。
 
 ## 配置
 
@@ -234,14 +277,18 @@ powershell -ExecutionPolicy Bypass -File .\install.ps1
 - 任务状态共五种：`RUNNING`、`SUCCESS`、`ERROR`、`CANCELLED`、`TIMEOUT`。
 - **`SUCCESS` 只表示 agy 调用成功，不代表成果正确。** 调用方仍需检查改动并运行测试。
 - 失败时结果附带 `errorCode`、`failureStage`、`errorMessage` 和建议操作 `nextAction`，已取得的响应和会话都会保留。
-- 运行中的结果显示当前阶段、正在使用的工具、文件和命令、最近 5 次工具操作，以及模型输出的最新片段（`latestText`）。完整回答在 `response` 中。
+- `exitReason` 用人话说明失败原因，例如 `0x40010004`（1073807364）表示 agy 被外部强制结束、`0xC000013A` 表示收到 Ctrl+C 或窗口被关闭、`TIMEOUT` 表示执行期限到期；`errorMessage` 同时保留原始退出码。
+- 已启动并取得会话的失败任务带 `resumeExample`：一条可直接照抄的续接调用（原工作目录 + 原 `conversation_id`）。
+- **中断后保留成果**：运行期间 agy 输出的全部文字会持续写入状态目录下的 `<taskId>.partial.md`。进程被结束、没有正式回答时，结果在 `partialResponse` 中给出最后约 8000 字（含已读文件和已运行命令清单），`partialOutputPath` 指向完整文件。agy 只读文件、还没写出文字时，部分结论可能很少，这时靠续接恢复。
+- 运行中的结果显示当前阶段、正在使用的工具、文件和命令、最近 5 次工具操作、累计进度（`progress`）以及模型输出的最新片段（`latestText`）。完整回答在 `response` 中；任务结束后 `latestText` 不再重复返回。
 - 同步调用时，如果客户端请求了进度通知，服务会在阶段变化时发送，并每 60 秒重复发送一次（消息含 `taskId` 和已用时间）。客户端中断等待时，可以用这个 `taskId` 继续查询。
 - `antigravity_status` 返回 `{ "schemaVersion": 3, "kind": "task" | "quota", "data": ... }`，另外三个工具直接返回任务结果。
 
 ## 安全与运行边界
 
 - **默认自动审批**：agy 执行命令和写文件不再逐项确认（相当于 agy 的 `--dangerously-skip-permissions`，同时启用 `--sandbox`）。需要逐项确认时传 `auto_approve: false`，或在配置中设置 `defaultAutoApprove: false`。
-- **`ask` 不是只读保护**：它只靠提示词要求 agent 不改文件。能完整取得 git 快照时，结果会附带 `workspaceChanged`；有变化时，`workspaceChangeSummary` 列出最多 20 个仓库根目录相对路径。检查包括 HEAD、暂存内容，以及已有脏文件和未跟踪文件的内容变化；Git 忽略的文件不在检查范围内。无法完整读取时省略这些字段，不能据此认为目录没有变化。这只说明运行期间工作区有变化，不能确定是 agent 改的（你或编辑器也可能同时在改）。这项检查不拦截也不回滚。
+- **只读模式**：`antigravity_ask` 传 `read_only: true` 时，MCP 会在 agy 全局插件目录 `~/.gemini/config/plugins/antigravity-mcp-readonly/` 安装一个 PreToolUse 钩子（首次使用时自动安装，内容不变时不改动）。钩子只在 MCP 启动的只读任务中生效：允许读文件、搜索和只读命令（如 `git status/diff/log/show`、`rg`、`Get-Content`、`Select-String`），拒绝写文件、编辑、MCP 工具和其他命令，也拒绝重定向、`;`/`&&` 串联和脚本块。你平时直接使用 agy 时，钩子立即退出、不输出任何内容，不改变 agy 的行为。只读任务如果观察到写类工具执行成功，或 agy 根本没有调用钩子（例如插件被手动禁用），结果判为失败（`READONLY_VIOLATION` / `READONLY_GUARD_UNAVAILABLE`），不会当作成功。
+- **不传 `read_only` 的 `ask` 不是只读保护**：它只靠提示词要求 agent 不改文件。能完整取得 git 快照时，结果会附带 `workspaceChanged`；有变化时，`workspaceChangeSummary` 列出最多 20 个仓库根目录相对路径。检查包括 HEAD、暂存内容，以及已有脏文件和未跟踪文件的内容变化；Git 忽略的文件不在检查范围内。无法完整读取时省略这些字段，不能据此认为目录没有变化。这只说明运行期间工作区有变化，不能确定是 agent 改的（你或编辑器也可能同时在改）。这项检查不拦截也不回滚。
 - **直接在真实目录执行**：同一目录及其父子目录同一时间只能跑一个任务，不同目录可以并行。这种互斥不阻止其他软件修改文件。
 - **禁止作为工作目录**：磁盘根目录、用户主目录本身（子目录可以）、Windows 系统目录和 Program Files，以及 POSIX 的 `/etc`、`/usr`、`/bin`、`/sbin`、`/lib`、`/var`、`/System`、`/Library`、`/private` 及其子目录。临时目录位于这些目录下时同样禁止；例如 macOS 的 `/private/var`。判断基于真实路径，符号链接无法绕过。
 - **失败也保留改动**：失败、取消和超时都不回滚文件。确认进程全部停止后才解除目录占用；无法确认时会明确报告，可以再次取消。

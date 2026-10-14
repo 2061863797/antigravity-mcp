@@ -2,6 +2,7 @@ import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { z } from 'zod';
 import { CallToolRequestSchema, type CallToolResult, type ServerRequest, type ServerNotification } from '@modelcontextprotocol/sdk/types.js';
 import type { RequestHandlerExtra } from '@modelcontextprotocol/sdk/shared/protocol.js';
+import { describeExitCode } from './exit-codes.js';
 
 type ToolExtra = RequestHandlerExtra<ServerRequest, ServerNotification>;
 const handlers = new WeakMap<McpServer, Map<string, (args: unknown, extra: ToolExtra) => Promise<CallToolResult>>>();
@@ -15,6 +16,8 @@ export const QuotaResultSchema = z.object({
       reset_time: z.string().datetime({ offset: true }).nullable().default(null) })).max(16) })).max(16)
 }).strict();
 export type QuotaResult = z.infer<typeof QuotaResultSchema>;
+const ProgressSchema = z.object({ filesRead: z.number().int().nonnegative(), commandsRun: z.number().int().nonnegative(),
+  toolCalls: z.number().int().nonnegative(), responseChars: z.number().int().nonnegative() }).strict();
 export const ResultSchema = z.object({
   schemaVersion: z.literal(3), status: z.enum(['RUNNING', 'SUCCESS', 'ERROR', 'CANCELLED', 'TIMEOUT']), executionStatus: z.string(),
   taskId: z.string().nullable(), workspaceDir: z.string().nullable(), executionWorkspaceDir: z.string().nullable(),
@@ -38,7 +41,14 @@ export const ResultSchema = z.object({
   usage: z.record(z.unknown()).nullable(), upstreamDurationSeconds: z.number().nonnegative().nullable(),
   rawLog: z.object({ path: z.string(), maxBytes: z.number(), writtenBytes: z.number(), truncated: z.boolean() }).strict().nullable(),
   // 仅 ask 且工作目录是 git 仓库时出现；变化不代表一定由 agent 造成。
-  workspaceChanged: z.boolean().optional(), workspaceChangeSummary: z.array(z.string()).max(20).optional()
+  workspaceChanged: z.boolean().optional(), workspaceChangeSummary: z.array(z.string()).max(20).optional(),
+  readOnly: z.boolean().default(false),
+  // 累计进度；progressRevision 只在阶段变化或计数跨过阈值时递增，供粗粒度等待使用。
+  progress: ProgressSchema.default({ filesRead: 0, commandsRun: 0, toolCalls: 0, responseChars: 0 }),
+  progressRevision: z.number().int().nonnegative().default(0),
+  exitReason: z.string().max(1024).nullable().default(null), resumeExample: z.string().max(40000).nullable().default(null),
+  // 终态失败且没有正式 response 时，给出运行中保存的文字尾部和完整记录文件。
+  partialResponse: z.string().max(8000).nullable().default(null), partialOutputPath: z.string().nullable().default(null)
 }).strict();
 export type TaskResult = z.infer<typeof ResultSchema>;
 export const TaskSummarySchema = z.object({
@@ -50,7 +60,10 @@ export const TaskSummarySchema = z.object({
   activeTool: ResultSchema.shape.activeTool.optional(), activeFile: ResultSchema.shape.activeFile.optional(),
   recentCommand: z.string().max(512).nullable().optional(), errorCode: ResultSchema.shape.errorCode.optional(),
   failureStage: ResultSchema.shape.failureStage.optional(), errorMessage: z.string().max(512).nullable().optional(),
-  nextAction: z.string().max(512).nullable().optional()
+  nextAction: z.string().max(512).nullable().optional(),
+  progressRevision: z.number().int().nonnegative().optional(),
+  progress: ProgressSchema.omit({ responseChars: true }).extend({ elapsedSeconds: ResultSchema.shape.elapsedSeconds, phase: PhaseSchema }).strict().optional(),
+  exitReason: z.string().max(512).nullable().optional(), resumeExample: z.string().max(2048).nullable().optional()
 }).strict();
 export type TaskSummary = z.infer<typeof TaskSummarySchema>;
 const brief = (text: string | null) => text === null ? null : text.slice(0, 512).replace(/[\uD800-\uDBFF]$/, '');
@@ -59,6 +72,10 @@ export function summarizeTask(result: TaskResult): TaskResult | TaskSummary {
   const summary: TaskSummary = { summary: true, taskId: result.taskId, status: result.status,
     revision: result.revision, unchanged: result.unchanged };
   const diagnostic = !!result.errorCode || result.managedProcess === 'UNKNOWN' || result.currentPhase === 'STOPPING';
+  // 同版本的最小简报保持不变；有变化时附上累计进度，让上层看到整体进展而不只是当前文件。
+  const { filesRead, commandsRun, toolCalls } = result.progress;
+  if (!result.unchanged || diagnostic) Object.assign(summary, { progressRevision: result.progressRevision,
+    progress: { filesRead, commandsRun, toolCalls, elapsedSeconds: result.elapsedSeconds, phase: result.currentPhase } });
   if (!result.unchanged || diagnostic) Object.assign(summary, {
     executionStatus: result.executionStatus, currentPhase: result.currentPhase, elapsedSeconds: result.elapsedSeconds,
     managedProcess: result.managedProcess, lastProgressAt: result.lastProgressAt,
@@ -66,7 +83,8 @@ export function summarizeTask(result: TaskResult): TaskResult | TaskSummary {
     activeTool: result.activeTool, activeFile: result.activeFile, recentCommand: brief(result.recentCommand)
   });
   if (result.errorCode) Object.assign(summary, { errorCode: result.errorCode, failureStage: result.failureStage,
-    errorMessage: brief(result.errorMessage), nextAction: brief(result.nextAction) });
+    errorMessage: brief(result.errorMessage), nextAction: brief(result.nextAction), exitReason: brief(result.exitReason),
+    resumeExample: result.resumeExample?.slice(0, 2048) ?? null });
   return summary;
 }
 export const StatusResultSchema = z.object({ schemaVersion: z.literal(3), kind: z.enum(['task', 'quota']),
@@ -86,6 +104,8 @@ function suggestNextAction(result: TaskResult): string {
   if (code === 'AGY_VERSION_UNREADABLE') return '检查 AGY_PATH 与 agy --version 输出；必要时由用户明确设置 ANTIGRAVITY_SKIP_VERSION_CHECK=1 跳过版本预检，不自动重试。';
   if (code === 'CLI_CONTENT_FILTERED') return 'Gemini 内容过滤拒绝了请求，response 不是任务成果。检查提示及上下文，由用户决定是否调整后重新提交；不自动重试、换模型或降低过滤设置。';
   if (code === 'CLI_BACKGROUND_ABORTED') return 'agy 结束时终止了后台任务，response 为部分结果。检查已有文件；如需继续，明确要求 agent 在前台运行验证、不要使用后台命令，再由用户决定是否续接，不自动重跑。';
+  if (code === 'READONLY_VIOLATION') return '只读任务出现写入或工作区变化：对照 workspaceChangeSummary 检查文件（也可能是用户同时在编辑），如实告知用户；不要自动还原或重跑。';
+  if (code === 'READONLY_GUARD_UNAVAILABLE') return '只读守卫无法安装或校验，任务未启动。检查错误中的路径与权限；不要去掉 read_only 绕过。';
   if (code === 'CLI_QUOTA_EXHAUSTED') return '额度不足，已有文件和已取得的会话保留。请用户选择由父 agent 接手，或等待额度恢复后在原目录使用原会话续接；选择前不要自动重试、换模型或接手。';
   if (code === 'PROCESS_TERMINATION_UNCONFIRMED' || code === 'LEASE_RELEASE_FAILED') return '继续查询并重试取消；确认进程停止和目录占用释放前，不重新提交。';
   if (code === 'WORKSPACE_BUSY') return '等待占用目录的任务结束，或用该任务 ID 在本机查询并明确取消；确认目录释放后再提交，不要重复执行。';
@@ -111,9 +131,29 @@ export function addFailureDetails(result: TaskResult): TaskResult {
       : ['CLI_OUTPUT_INVALID', 'CLI_CONTENT_FILTERED'].includes(result.errorCode) ? 'RESULT'
       : ['CLI_ERROR', 'CLI_EXIT_FAILED', 'CLI_WAITING', 'CLI_INCOMPLETE', 'CLI_INVALID', 'CLI_INTERRUPTED', 'CLI_QUOTA_EXHAUSTED', 'CLI_BACKGROUND_ABORTED'].includes(result.errorCode) ? 'CLI' : null;
     result.errorMessage ??= result.cliError ?? result.errorCode;
-    result.nextAction ??= suggestNextAction(result);
-  } else { result.failureStage = null; result.errorMessage = null; result.nextAction = null; }
+    result.exitReason ??= explainFailure(result);
+    result.resumeExample ??= resumeExample(result);
+    result.nextAction ??= suggestNextAction(result) + (result.resumeExample ? ' 续接调用示例见 resumeExample。' : '');
+  } else { result.failureStage = null; result.errorMessage = null; result.nextAction = null; result.exitReason = null; result.resumeExample = null; }
   return result;
+}
+function explainFailure(result: TaskResult): string | null {
+  const code = result.errorCode;
+  if (code === 'TIMEOUT') return '执行期限（execution_timeout_minutes）到期，MCP 主动停止了 agy；已有文件和会话保留。';
+  if (code === 'CANCELLED') return '任务被取消（antigravity_cancel_task 或客户端取消），MCP 停止了 agy；已有文件和会话保留。';
+  if (code === 'WORKER_INTERRUPTED') return 'MCP 的后台执行进程（worker）意外退出，agy 随之结束；不是 agy 自身报错。';
+  if (code === 'READONLY_VIOLATION') return '只读任务中检测到写入或工作区变化，任务按失败处理。';
+  return describeExitCode(result.processExitCode) ?? null;
+}
+// 只给已经启动并取得会话、且进程已确认停止的失败任务生成续接示例；工作目录用原提交目录。
+const noResume = ['PROCESS_TERMINATION_UNCONFIRMED', 'LEASE_RELEASE_FAILED', 'CLI_CONTENT_FILTERED', 'WORKSPACE_BUSY'];
+function resumeExample(result: TaskResult): string | null {
+  if (result.status === 'RUNNING' || result.status === 'SUCCESS' || !result.conversationId || !result.workspaceDir
+    || !result.executionStarted || noResume.includes(result.errorCode ?? '')) return null;
+  const tool = result.readOnly ? 'antigravity_ask' : result.cliMode === 'plan' ? 'antigravity_ask 或 antigravity_code（与原任务相同）' : '原任务所用工具（antigravity_ask 或 antigravity_code）';
+  const args = { workspace_dir: result.workspaceDir, conversation_id: result.conversationId,
+    prompt: '上次执行中断了。请在已有进度基础上继续完成原任务，直接给出完整结论。', ...(result.readOnly ? { read_only: true } : {}) };
+  return `用${tool}续接：${JSON.stringify(args)}`;
 }
 export function normalizeResult(data: Partial<TaskResult> & Pick<TaskResult, 'status' | 'executionStatus'>): TaskResult {
   return addFailureDetails(ResultSchema.parse({ schemaVersion: 3, taskId: null, workspaceDir: null, executionWorkspaceDir: null,

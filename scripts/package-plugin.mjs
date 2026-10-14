@@ -48,7 +48,7 @@ function npmCli() {
   return found;
 }
 
-for (const file of ['dist/index.js', 'dist/task-worker.js', 'config.json', 'LICENSE', 'plugin/skills/antigravity-delegation/SKILL.md', 'plugin/install.ps1']) {
+for (const file of ['dist/index.js', 'dist/task-worker.js', 'dist/hook-wait.js','config.json', 'LICENSE', 'plugin/skills/antigravity-delegation/SKILL.md', 'plugin/install.ps1']) {
   if (!fs.existsSync(path.join(root, file))) throw new Error(`缺少 ${file}；先构建并准备插件。`);
 }
 const manifest = JSON.parse(fs.readFileSync(path.join(root, 'plugin/plugin.json'), 'utf8'));
@@ -98,7 +98,15 @@ try {
     if (old.name !== manifest.name || old.version !== pkg.version) throw new Error('已有目录不是本版本发布产物');
   }
   removeOwned(destination); removeOwned(archive);
-  fs.renameSync(bundle, destination); fs.renameSync(zip, archive);
+  // 部分环境（如沙箱或虚拟化目录）对同盘重命名也报 EXDEV；此时改为复制，避免旧目录已删、新目录未就位。
+  const place = (source, target, directory) => {
+    try { fs.renameSync(source, target); }
+    catch (error) {
+      if (error.code !== 'EXDEV') throw error;
+      if (directory) copy(source, target); else fs.copyFileSync(source, target);
+    }
+  };
+  place(bundle, destination, true); place(zip, archive, false);
   console.log(JSON.stringify({ directory: destination, zip: archive, zipBytes: fs.statSync(archive).size,
     bundledPackages: packed.bundled.length }, null, 2));
 } finally { removeOwned(staging); }

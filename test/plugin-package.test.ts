@@ -41,7 +41,7 @@ test('Windows plugin ZIP relocates with metadata, production dependencies and or
   });
   const release = path.join(temporary, '发布 空格');
   const packed = JSON.parse(execute(process.execPath, ['scripts/package-plugin.mjs', '--output-dir', release], root));
-  const name = 'antigravity-mcp-plugin-2.0.0';
+  const name = 'antigravity-mcp-plugin-2.1.0';
   const relocated = path.join(temporary, '解压 中文'); fs.mkdirSync(relocated);
   fs.copyFileSync(packed.zip, path.join(relocated, `${name}.zip`));
   const listing = execute(tar, ['-tf', `${name}.zip`], relocated).trim().split(/\r?\n/);
@@ -72,14 +72,14 @@ test('Windows plugin ZIP relocates with metadata, production dependencies and or
   const marketplace = read(path.join(directory, '.agents/plugins/marketplace.json'));
   const manifest = read(path.join(plugin, 'plugin.json'));
   assert.equal(path.resolve(directory, marketplace.plugins[0].source.path), plugin);
-  assert.equal(manifest.name, 'antigravity-mcp'); assert.equal(manifest.version, '2.0.0');
+  assert.equal(manifest.name, 'antigravity-mcp'); assert.equal(manifest.version, '2.1.0');
   assert.equal(manifest.extensions['com.openai'].interface.displayName, 'Antigravity MCP');
   // Claude Code 清单与 Codex 清单指向同一个插件目录和同一个运行时入口。
   const claudeMarketplace = read(path.join(directory, '.claude-plugin/marketplace.json'));
   const claudeManifest = read(path.join(plugin, '.claude-plugin/plugin.json'));
   assert.equal(claudeMarketplace.name, 'antigravity-local'); assert.equal(claudeMarketplace.plugins[0].name, 'antigravity-mcp');
   assert.equal(path.resolve(directory, claudeMarketplace.plugins[0].source), plugin);
-  assert.equal(claudeManifest.name, 'antigravity-mcp'); assert.equal(claudeManifest.version, '2.0.0');
+  assert.equal(claudeManifest.name, 'antigravity-mcp'); assert.equal(claudeManifest.version, '2.1.0');
   const claudeServer = claudeManifest.mcpServers.antigravity, codexServer = read(path.join(plugin, 'mcp.json')).mcpServers['antigravity-mcp'];
   assert.equal(claudeServer.command, codexServer.command);
   assert.deepEqual(claudeServer.args.map((arg: string) => arg.replaceAll('${CLAUDE_PLUGIN_ROOT}', plugin)),

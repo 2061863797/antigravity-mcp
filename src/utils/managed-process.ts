@@ -320,12 +320,12 @@ export function formatCommandLine(executable: string, args: string[]): string {
 export async function runManagedProcess(executable: string, args: string[], options: {
   cwd?: string; signal?: AbortSignal; timeoutMs?: number; shell?: boolean; jobToken?: string;
   onSpawn?: (pid: number, createdAt?: string) => void; onExit?: (pid: number) => void; onOutput?: (text: string) => void;
-  onStdoutChunk?: (chunk: Buffer) => void; streamingOutput?: boolean;
+  onStdoutChunk?: (chunk: Buffer) => void; streamingOutput?: boolean; env?: Record<string, string>;
 } = {}): Promise<ProcessResult> {
   if (options.signal?.aborted) return { stdout: '', stderr: '', exitCode: null, error: 'CANCELLED', stopped: true };
 
   return new Promise(resolve => {
-    const env = { ...process.env };
+    const env = { ...process.env, ...options.env };
     if (process.platform === 'win32') {
       if (!Object.keys(env).some(key => key.toLowerCase() === 'pathext' && env[key])) env.PATHEXT = '.COM;.EXE;.BAT;.CMD';
       const pathKeys = Object.keys(env).filter(key => key.toLowerCase() === 'path');
